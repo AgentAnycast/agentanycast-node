@@ -201,10 +201,11 @@ func (s *Server) SetAgentCard(ctx context.Context, req *pb.SetAgentCardRequest) 
 
 	s.logger.Info("agent card set", "name", req.Card.Name)
 
-	// Push card to all connected peers
+	// Push card to all connected peers.
+	// Use background context since the gRPC request context is short-lived.
 	for _, pid := range s.host.ConnectedPeers() {
 		go func(pid peer.ID) {
-			if err := s.host.ExchangeCard(ctx, pid, raw); err != nil {
+			if err := s.host.ExchangeCard(context.Background(), pid, raw); err != nil {
 				s.logger.Debug("card push failed", "peer", pid, "error", err)
 			}
 		}(pid)

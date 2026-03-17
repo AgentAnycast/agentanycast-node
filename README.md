@@ -126,6 +126,7 @@ bootstrap_peers = [
 - **libp2p Host** -- Peer discovery (mDNS), connections, NAT traversal, E2E encryption
 - **gRPC Server** -- 13 RPC methods for SDKs to control the daemon
 - **Store** -- BoltDB-based persistence for tasks, agent cards, and queued messages
+- **Auto Card Exchange** -- Agent Cards are automatically exchanged with newly connected peers
 
 ## Disclaimer
 
