@@ -423,7 +423,7 @@ func (s *Server) SubscribeTaskUpdates(req *pb.SubscribeTaskUpdatesRequest, strea
 			if !ok {
 				return nil
 			}
-			if err := stream.Send(&pb.TaskUpdateEvent{
+			if err := stream.Send(&pb.SubscribeTaskUpdatesResponse{
 				TaskId:    evt.TaskID,
 				Status:    evt.Status,
 				Message:   evt.Message,
@@ -464,7 +464,7 @@ func (s *Server) SubscribeIncomingTasks(req *pb.SubscribeIncomingTasksRequest, s
 			if !ok {
 				return nil
 			}
-			if err := stream.Send(&pb.IncomingTaskEvent{
+			if err := stream.Send(&pb.SubscribeIncomingTasksResponse{
 				Task:       evt.Task,
 				SenderCard: evt.SenderCard,
 			}); err != nil {

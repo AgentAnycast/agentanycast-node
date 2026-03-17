@@ -31,6 +31,14 @@ jobs:
           repository: agentanycast/agentanycast-proto
           path: agentanycast-proto
 
+      - uses: bufbuild/buf-setup-action@v1
+        with:
+          github_token: ${{ github.token }}
+
+      - name: Generate Go code from proto
+        working-directory: agentanycast-proto
+        run: buf generate
+
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
