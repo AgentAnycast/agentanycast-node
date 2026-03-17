@@ -37,7 +37,7 @@ For agents on different networks (across the internet), you need a relay server.
 
 ```bash
 # On any VPS with a public IP (Oracle Cloud free tier works great)
-git clone https://github.com/agentanycast/agentanycast-relay && cd agentanycast-relay
+git clone https://github.com/AgentAnycast/agentanycast-relay && cd agentanycast-relay
 docker-compose up -d
 
 # Note the RELAY_ADDR from the logs, then tell your nodes about it:
