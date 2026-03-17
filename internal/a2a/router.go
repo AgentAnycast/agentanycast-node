@@ -1,0 +1,461 @@
+// Package a2a implements the A2A protocol engine — Task state machine,
+// message routing, and Agent Card management.
+package a2a
+
+import (
+	"fmt"
+	"log/slog"
+	"sync"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/libp2p/go-libp2p/core/peer"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	pb "github.com/agentanycast/agentanycast-proto/gen/go/agentanycast/v1"
+)
+
+// SendFunc sends serialized bytes to a remote peer over libp2p.
+type SendFunc func(ctx interface{}, pid peer.ID, data []byte) error
+
+// Router handles deserialization, routing, and dispatch of A2A messages
+// received over the libp2p network.
+type Router struct {
+	engine     *Engine
+	logger     *slog.Logger
+	sendFn     SendFunc
+	ackTracker *AckTracker
+
+	mu              sync.RWMutex
+	incomingCh      chan *IncomingTaskEvent
+	taskUpdateSubs  map[string][]chan *TaskUpdateEvent
+}
+
+// IncomingTaskEvent is emitted when a remote peer sends us a new task.
+type IncomingTaskEvent struct {
+	Task       *pb.Task
+	SenderCard *pb.AgentCard
+	SenderPeer peer.ID
+}
+
+// TaskUpdateEvent is emitted when a task's status changes.
+type TaskUpdateEvent struct {
+	TaskID    string
+	Status    pb.TaskStatus
+	Message   *pb.Message
+	Artifacts []*pb.Artifact
+}
+
+// NewRouter creates a new A2A message router.
+func NewRouter(engine *Engine, logger *slog.Logger, sendFn SendFunc) *Router {
+	r := &Router{
+		engine:         engine,
+		logger:         logger,
+		sendFn:         sendFn,
+		ackTracker:     NewAckTracker(sendFn, logger),
+		incomingCh:     make(chan *IncomingTaskEvent, 64),
+		taskUpdateSubs: make(map[string][]chan *TaskUpdateEvent),
+	}
+
+	// Wire engine callback to push updates to subscribers.
+	engine.SetOnTaskUpdate(func(t *Task) {
+		r.mu.RLock()
+		subs := r.taskUpdateSubs[t.ID]
+		r.mu.RUnlock()
+
+		evt := &TaskUpdateEvent{
+			TaskID: t.ID,
+			Status: TaskStatusToProto(t.Status),
+		}
+		for _, ch := range subs {
+			select {
+			case ch <- evt:
+			default:
+				// Drop if subscriber is slow
+			}
+		}
+	})
+
+	return r
+}
+
+// IncomingTasks returns the channel of new incoming task events.
+func (r *Router) IncomingTasks() <-chan *IncomingTaskEvent {
+	return r.incomingCh
+}
+
+// SubscribeTaskUpdates returns a channel that receives updates for a specific task.
+func (r *Router) SubscribeTaskUpdates(taskID string) chan *TaskUpdateEvent {
+	ch := make(chan *TaskUpdateEvent, 16)
+	r.mu.Lock()
+	r.taskUpdateSubs[taskID] = append(r.taskUpdateSubs[taskID], ch)
+	r.mu.Unlock()
+	return ch
+}
+
+// UnsubscribeTaskUpdates removes a subscriber channel for a task.
+func (r *Router) UnsubscribeTaskUpdates(taskID string, ch chan *TaskUpdateEvent) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	subs := r.taskUpdateSubs[taskID]
+	for i, s := range subs {
+		if s == ch {
+			r.taskUpdateSubs[taskID] = append(subs[:i], subs[i+1:]...)
+			break
+		}
+	}
+	if len(r.taskUpdateSubs[taskID]) == 0 {
+		delete(r.taskUpdateSubs, taskID)
+	}
+	close(ch)
+}
+
+// HandleMessage processes an incoming A2A message from a remote peer.
+func (r *Router) HandleMessage(remotePeer peer.ID, data []byte) {
+	var env pb.A2AEnvelope
+	if err := proto.Unmarshal(data, &env); err != nil {
+		r.logger.Warn("failed to unmarshal A2AEnvelope", "peer", remotePeer, "error", err)
+		return
+	}
+
+	r.logger.Debug("routing A2A envelope",
+		"peer", remotePeer,
+		"type", env.Type.String(),
+		"envelope_id", env.EnvelopeId,
+	)
+
+	switch env.Type {
+	case pb.EnvelopeType_ENVELOPE_TYPE_SEND_TASK:
+		r.handleSendTask(remotePeer, &env)
+	case pb.EnvelopeType_ENVELOPE_TYPE_TASK_STATUS_UPDATE:
+		r.handleTaskStatusUpdate(remotePeer, &env)
+	case pb.EnvelopeType_ENVELOPE_TYPE_TASK_COMPLETE:
+		r.handleTaskComplete(remotePeer, &env)
+	case pb.EnvelopeType_ENVELOPE_TYPE_TASK_FAIL:
+		r.handleTaskFail(remotePeer, &env)
+	case pb.EnvelopeType_ENVELOPE_TYPE_TASK_CANCEL:
+		r.handleTaskCancel(remotePeer, &env)
+	case pb.EnvelopeType_ENVELOPE_TYPE_ACK:
+		r.handleAck(remotePeer, &env)
+		return // Don't send an ACK for an ACK
+	default:
+		r.logger.Warn("unknown envelope type", "type", env.Type)
+		return
+	}
+
+	// Send ACK back to sender for all non-ACK envelope types.
+	if err := SendAck(r.sendFn, nil, remotePeer, env.EnvelopeId); err != nil {
+		r.logger.Warn("failed to send ACK", "envelope_id", env.EnvelopeId, "error", err)
+	}
+}
+
+func (r *Router) handleSendTask(remotePeer peer.ID, env *pb.A2AEnvelope) {
+	payload := env.GetSendTask()
+	if payload == nil {
+		r.logger.Warn("send_task envelope missing payload")
+		return
+	}
+
+	taskID := payload.TaskId
+	if taskID == "" {
+		taskID = uuid.New().String()
+	}
+
+	// Register in engine
+	task := &Task{
+		ID:               taskID,
+		ContextID:        payload.ContextId,
+		Status:           StatusSubmitted,
+		TargetSkillID:    payload.TargetSkillId,
+		OriginatorPeerID: remotePeer.String(),
+		CreatedAt:        time.Now(),
+		UpdatedAt:        time.Now(),
+	}
+	r.engine.RegisterTask(task)
+
+	// Build proto task for the incoming event
+	pbTask := &pb.Task{
+		TaskId:           taskID,
+		ContextId:        payload.ContextId,
+		Status:           pb.TaskStatus_TASK_STATUS_SUBMITTED,
+		TargetSkillId:    payload.TargetSkillId,
+		OriginatorPeerId: remotePeer.String(),
+		CreatedAt:        timestamppb.Now(),
+		UpdatedAt:        timestamppb.Now(),
+	}
+	if payload.Message != nil {
+		pbTask.Messages = []*pb.Message{payload.Message}
+	}
+
+	// Emit to incoming tasks channel
+	select {
+	case r.incomingCh <- &IncomingTaskEvent{
+		Task:       pbTask,
+		SenderPeer: remotePeer,
+	}:
+	default:
+		r.logger.Warn("incoming task channel full, dropping task", "task_id", taskID)
+	}
+
+	r.logger.Info("incoming task registered", "task_id", taskID, "from", remotePeer)
+}
+
+func (r *Router) handleTaskStatusUpdate(remotePeer peer.ID, env *pb.A2AEnvelope) {
+	payload := env.GetTaskStatusUpdate()
+	if payload == nil {
+		return
+	}
+
+	newStatus := ProtoToTaskStatus(payload.Status)
+	if err := r.engine.TransitionTask(payload.TaskId, newStatus); err != nil {
+		r.logger.Warn("status update rejected", "task_id", payload.TaskId, "error", err)
+		return
+	}
+
+	// Notify subscribers
+	r.notifyUpdate(payload.TaskId, payload.Status, payload.Message, nil)
+}
+
+func (r *Router) handleTaskComplete(remotePeer peer.ID, env *pb.A2AEnvelope) {
+	payload := env.GetTaskComplete()
+	if payload == nil {
+		return
+	}
+
+	if err := r.engine.TransitionTask(payload.TaskId, StatusCompleted); err != nil {
+		r.logger.Warn("complete rejected", "task_id", payload.TaskId, "error", err)
+		return
+	}
+
+	r.notifyUpdate(payload.TaskId, pb.TaskStatus_TASK_STATUS_COMPLETED, payload.Message, payload.Artifacts)
+}
+
+func (r *Router) handleTaskFail(remotePeer peer.ID, env *pb.A2AEnvelope) {
+	payload := env.GetTaskFail()
+	if payload == nil {
+		return
+	}
+
+	if err := r.engine.TransitionTask(payload.TaskId, StatusFailed); err != nil {
+		r.logger.Warn("fail rejected", "task_id", payload.TaskId, "error", err)
+		return
+	}
+
+	r.notifyUpdate(payload.TaskId, pb.TaskStatus_TASK_STATUS_FAILED, payload.Message, nil)
+}
+
+func (r *Router) handleTaskCancel(remotePeer peer.ID, env *pb.A2AEnvelope) {
+	payload := env.GetTaskCancel()
+	if payload == nil {
+		return
+	}
+
+	if err := r.engine.TransitionTask(payload.TaskId, StatusCanceled); err != nil {
+		r.logger.Warn("cancel rejected", "task_id", payload.TaskId, "error", err)
+		return
+	}
+
+	r.notifyUpdate(payload.TaskId, pb.TaskStatus_TASK_STATUS_CANCELED, nil, nil)
+}
+
+func (r *Router) handleAck(_ peer.ID, env *pb.A2AEnvelope) {
+	payload := env.GetAck()
+	if payload == nil {
+		return
+	}
+	ackID := payload.AcknowledgedEnvelopeId
+	if r.ackTracker.Acknowledge(ackID) {
+		r.logger.Debug("received ACK", "acknowledged_id", ackID)
+	} else {
+		r.logger.Debug("received ACK for unknown envelope", "acknowledged_id", ackID)
+	}
+}
+
+// AckTracker returns the router's AckTracker.
+func (r *Router) AckTracker() *AckTracker {
+	return r.ackTracker
+}
+
+// Close stops the router's background goroutines.
+func (r *Router) Close() {
+	r.ackTracker.Stop()
+}
+
+func (r *Router) notifyUpdate(taskID string, status pb.TaskStatus, msg *pb.Message, artifacts []*pb.Artifact) {
+	r.mu.RLock()
+	subs := r.taskUpdateSubs[taskID]
+	r.mu.RUnlock()
+
+	evt := &TaskUpdateEvent{
+		TaskID:    taskID,
+		Status:    status,
+		Message:   msg,
+		Artifacts: artifacts,
+	}
+	for _, ch := range subs {
+		select {
+		case ch <- evt:
+		default:
+		}
+	}
+}
+
+// SendTask creates and sends a task to a remote peer.
+func (r *Router) SendTask(ctx interface{}, targetPeer peer.ID, msg *pb.Message, targetSkillID, contextID string) (*Task, error) {
+	task := r.engine.CreateTask(contextID, targetSkillID, "local")
+
+	env := &pb.A2AEnvelope{
+		EnvelopeId: uuid.New().String(),
+		Type:       pb.EnvelopeType_ENVELOPE_TYPE_SEND_TASK,
+		Timestamp:  timestamppb.Now(),
+		Payload: &pb.A2AEnvelope_SendTask{
+			SendTask: &pb.SendTaskPayload{
+				TaskId:        task.ID,
+				ContextId:     contextID,
+				Message:       msg,
+				TargetSkillId: targetSkillID,
+			},
+		},
+	}
+
+	data, err := proto.Marshal(env)
+	if err != nil {
+		return nil, fmt.Errorf("marshal envelope: %w", err)
+	}
+
+	if err := r.sendFn(ctx, targetPeer, data); err != nil {
+		return nil, fmt.Errorf("send task to %s: %w", targetPeer, err)
+	}
+
+	r.ackTracker.Track(targetPeer, env.EnvelopeId, data)
+
+	r.logger.Info("task sent", "task_id", task.ID, "target", targetPeer)
+	return task, nil
+}
+
+// SendStatusUpdate sends a task status update to the originator peer.
+func (r *Router) SendStatusUpdate(ctx interface{}, targetPeer peer.ID, taskID string, status pb.TaskStatus, msg *pb.Message) error {
+	env := &pb.A2AEnvelope{
+		EnvelopeId: uuid.New().String(),
+		Type:       pb.EnvelopeType_ENVELOPE_TYPE_TASK_STATUS_UPDATE,
+		Timestamp:  timestamppb.Now(),
+		Payload: &pb.A2AEnvelope_TaskStatusUpdate{
+			TaskStatusUpdate: &pb.TaskStatusUpdatePayload{
+				TaskId:  taskID,
+				Status:  status,
+				Message: msg,
+			},
+		},
+	}
+
+	data, err := proto.Marshal(env)
+	if err != nil {
+		return fmt.Errorf("marshal status update: %w", err)
+	}
+
+	if err := r.sendFn(ctx, targetPeer, data); err != nil {
+		return err
+	}
+	r.ackTracker.Track(targetPeer, env.EnvelopeId, data)
+	return nil
+}
+
+// SendComplete sends a task completion message to the originator peer.
+func (r *Router) SendComplete(ctx interface{}, targetPeer peer.ID, taskID string, artifacts []*pb.Artifact, msg *pb.Message) error {
+	env := &pb.A2AEnvelope{
+		EnvelopeId: uuid.New().String(),
+		Type:       pb.EnvelopeType_ENVELOPE_TYPE_TASK_COMPLETE,
+		Timestamp:  timestamppb.Now(),
+		Payload: &pb.A2AEnvelope_TaskComplete{
+			TaskComplete: &pb.TaskCompletePayload{
+				TaskId:    taskID,
+				Artifacts: artifacts,
+				Message:   msg,
+			},
+		},
+	}
+
+	data, err := proto.Marshal(env)
+	if err != nil {
+		return fmt.Errorf("marshal complete: %w", err)
+	}
+
+	if err := r.sendFn(ctx, targetPeer, data); err != nil {
+		return err
+	}
+	r.ackTracker.Track(targetPeer, env.EnvelopeId, data)
+	return nil
+}
+
+// SendFail sends a task failure message to the originator peer.
+func (r *Router) SendFail(ctx interface{}, targetPeer peer.ID, taskID, errorMessage string) error {
+	env := &pb.A2AEnvelope{
+		EnvelopeId: uuid.New().String(),
+		Type:       pb.EnvelopeType_ENVELOPE_TYPE_TASK_FAIL,
+		Timestamp:  timestamppb.Now(),
+		Payload: &pb.A2AEnvelope_TaskFail{
+			TaskFail: &pb.TaskFailPayload{
+				TaskId:       taskID,
+				ErrorMessage: errorMessage,
+			},
+		},
+	}
+
+	data, err := proto.Marshal(env)
+	if err != nil {
+		return fmt.Errorf("marshal fail: %w", err)
+	}
+
+	if err := r.sendFn(ctx, targetPeer, data); err != nil {
+		return err
+	}
+	r.ackTracker.Track(targetPeer, env.EnvelopeId, data)
+	return nil
+}
+
+// ── Status conversion helpers ─────────────────────────────
+
+// TaskStatusToProto converts internal TaskStatus to proto TaskStatus.
+func TaskStatusToProto(s TaskStatus) pb.TaskStatus {
+	switch s {
+	case StatusSubmitted:
+		return pb.TaskStatus_TASK_STATUS_SUBMITTED
+	case StatusWorking:
+		return pb.TaskStatus_TASK_STATUS_WORKING
+	case StatusInputRequired:
+		return pb.TaskStatus_TASK_STATUS_INPUT_REQUIRED
+	case StatusCompleted:
+		return pb.TaskStatus_TASK_STATUS_COMPLETED
+	case StatusFailed:
+		return pb.TaskStatus_TASK_STATUS_FAILED
+	case StatusCanceled:
+		return pb.TaskStatus_TASK_STATUS_CANCELED
+	case StatusRejected:
+		return pb.TaskStatus_TASK_STATUS_REJECTED
+	default:
+		return pb.TaskStatus_TASK_STATUS_UNSPECIFIED
+	}
+}
+
+// ProtoToTaskStatus converts proto TaskStatus to internal TaskStatus.
+func ProtoToTaskStatus(s pb.TaskStatus) TaskStatus {
+	switch s {
+	case pb.TaskStatus_TASK_STATUS_SUBMITTED:
+		return StatusSubmitted
+	case pb.TaskStatus_TASK_STATUS_WORKING:
+		return StatusWorking
+	case pb.TaskStatus_TASK_STATUS_INPUT_REQUIRED:
+		return StatusInputRequired
+	case pb.TaskStatus_TASK_STATUS_COMPLETED:
+		return StatusCompleted
+	case pb.TaskStatus_TASK_STATUS_FAILED:
+		return StatusFailed
+	case pb.TaskStatus_TASK_STATUS_CANCELED:
+		return StatusCanceled
+	case pb.TaskStatus_TASK_STATUS_REJECTED:
+		return StatusRejected
+	default:
+		return StatusUnspecified
+	}
+}

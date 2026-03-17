@@ -1,0 +1,19 @@
+# Binaries
+agentanycastd
+agentbraind
+bin/
+*.exe
+
+# OS
+.DS_Store
+*.swp
+*.swo
+*~
+
+# IDE
+.idea/
+.vscode/
+
+# Test
+coverage.out
+*.test
