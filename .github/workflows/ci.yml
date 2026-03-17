@@ -43,6 +43,41 @@ jobs:
       - name: Go vet
         run: go vet ./...
 
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: agentanycast/agentanycast-proto
+          path: agentanycast-proto
+
+      - uses: bufbuild/buf-setup-action@v1
+        with:
+          github_token: ${{ github.token }}
+
+      - name: Generate Go code from proto
+        working-directory: agentanycast-proto
+        run: buf generate
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Configure local replace directive
+        run: go mod edit -replace github.com/agentanycast/agentanycast-proto=./agentanycast-proto
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
   test:
     name: Go Test
     runs-on: ubuntu-latest

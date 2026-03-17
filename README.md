@@ -2,7 +2,7 @@
 
 P2P daemon for decentralized A2A agent-to-agent communication.
 
-[![Go](https://img.shields.io/badge/Go-1.21+-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License](https://img.shields.io/badge/License-FSL--1.1--ALv2-blue)](LICENSE)
 
 > **AgentAnycast is fully decentralized.** On a local network, it works with zero configuration via mDNS auto-discovery. For cross-network communication, just deploy your own relay with a single command.
