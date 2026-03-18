@@ -14,7 +14,10 @@ AgentAnycast Node (`agentanycastd`) is the core daemon that powers the AgentAnyc
 - **Automatic peer discovery** via mDNS on local networks
 - **NAT traversal** via circuit relay and hole punching for cross-network communication
 - **End-to-end encryption** using Noise_XX (Curve25519 + ChaCha20-Poly1305)
-- **A2A task routing** between peers
+- **A2A task routing** between peers with direct, skill-based, and HTTP bridge addressing
+- **Streaming** for chunked artifact delivery
+- **HTTP Bridge** for P2P ↔ HTTP A2A interop
+- **Prometheus metrics** for observability
 - **gRPC API** for language SDKs (Python, etc.) to interact with the daemon
 
 ## Quick Start
@@ -76,11 +79,30 @@ Default location: `~/.agentanycast/config.toml`
 key_path = "~/.agentanycast/key"
 grpc_listen = "127.0.0.1:50051"
 log_level = "info"
+log_format = "json"             # "json" or "text"
 store_path = "~/.agentanycast/store"
 enable_mdns = true
 bootstrap_peers = [
     "/ip4/203.0.113.50/tcp/4001/p2p/12D3KooW..."
 ]
+
+[bridge]
+enabled = false
+listen = ":8080"
+# tls_cert = "/path/to/cert.pem"
+# tls_key = "/path/to/key.pem"
+# cors_origins = ["https://app.example.com"]
+
+[anycast]
+# registry_addr = "relay.example.com:50052"
+enable_dht = false
+dht_mode = "auto"               # "auto", "server", or "client"
+cache_ttl = "30s"
+auto_register = true
+
+[metrics]
+enabled = false
+listen = ":9090"
 ```
 
 ### CLI Flags
@@ -91,42 +113,82 @@ bootstrap_peers = [
 | `-grpc-listen` | gRPC listen address |
 | `-log-level` | Log level |
 | `-bootstrap-peers` | Comma-separated bootstrap multiaddrs |
+| `-bridge-listen` | HTTP bridge listen address (e.g., `:8080`) |
 | `-config` | Path to TOML config file |
 | `-version` | Print version and exit |
 
 ## Architecture
 
 ```
-┌────────────────────────────────────────────────┐
-│                 agentanycastd                   │
-│                                                │
-│  ┌──────────┐  ┌──────────┐  ┌──────────────┐ │
-│  │  Engine   │  │  Router  │  │ Offline Queue│ │
-│  │(task FSM) │  │(A2A msg) │  │  (retry)     │ │
-│  └────┬─────┘  └────┬─────┘  └──────┬───────┘ │
-│       │              │               │         │
-│  ┌────┴──────────────┴───────────────┴───────┐ │
-│  │              libp2p Host                   │ │
-│  │  mDNS · Noise · TCP/QUIC · Relay · DCUtR  │ │
-│  └────────────────────┬──────────────────────┘ │
-│                       │                        │
-│  ┌────────────────────┴──────────────────────┐ │
-│  │            gRPC Server (SDK API)          │ │
-│  └───────────────────────────────────────────┘ │
-│                                                │
-│  ┌───────────────────────────────────────────┐ │
-│  │          BoltDB Store (persistence)       │ │
-│  └───────────────────────────────────────────┘ │
-└────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│                      agentanycastd                       │
+│                                                          │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐ ┌──────────┐  │
+│  │  Engine   │  │  Router  │  │ Offline  │ │ Anycast  │  │
+│  │(task FSM) │  │(A2A msg) │  │  Queue   │ │ Router   │  │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘ └────┬─────┘  │
+│       │              │             │             │        │
+│  ┌────┴──────────────┴─────────────┴─────────────┴─────┐ │
+│  │                    libp2p Host                      │ │
+│  │  mDNS · Noise · TCP/QUIC · Relay · DCUtR · DHT     │ │
+│  └──────────────────────┬──────────────────────────────┘ │
+│                         │                                │
+│  ┌──────────────────────┴──────────────────────────────┐ │
+│  │      gRPC Server (16 RPCs for SDK)                  │ │
+│  └─────────────────────────────────────────────────────┘ │
+│                                                          │
+│  ┌───────────────┐  ┌───────────────┐  ┌──────────────┐  │
+│  │  HTTP Bridge  │  │   Metrics     │  │  BoltDB      │  │
+│  │  (A2A ↔ P2P)  │  │  (Prometheus) │  │  (storage)   │  │
+│  └───────────────┘  └───────────────┘  └──────────────┘  │
+└──────────────────────────────────────────────────────────┘
 ```
 
-- **Engine** -- Task state machine (submitted → working → completed/failed)
-- **Router** -- Serializes/deserializes A2A envelopes, routes between peers, handles ACK + retransmission
-- **Offline Queue** -- Queues messages for unreachable peers, auto-flushes on reconnection
-- **libp2p Host** -- Peer discovery (mDNS), connections, NAT traversal, E2E encryption
-- **gRPC Server** -- 13 RPC methods for SDKs to control the daemon
-- **Store** -- BoltDB-based persistence for tasks, agent cards, and queued messages
-- **Auto Card Exchange** -- Agent Cards are automatically exchanged with newly connected peers
+### Internal Packages
+
+| Package | Responsibility |
+|---|---|
+| `internal/a2a/` | A2A protocol engine — task state machine, envelope routing, offline queue, streaming |
+| `internal/node/` | libp2p host — peer connections, mDNS discovery, DHT, stream multiplexing |
+| `internal/crypto/` | Ed25519 key management, Noise_XX integration |
+| `internal/nat/` | AutoNAT detection, DCUtR hole punching, Circuit Relay v2 client |
+| `internal/store/` | BoltDB persistence — tasks, agent cards, offline message queue |
+| `internal/config/` | Configuration — TOML file, environment variables, CLI flags |
+| `internal/bridge/` | HTTP Bridge — translates HTTP JSON-RPC ↔ P2P A2A envelopes |
+| `internal/anycast/` | Anycast router — skill-based addressing, registry + DHT discovery |
+| `internal/metrics/` | Prometheus metrics — connections, tasks, routing, bridge, streaming |
+| `pkg/grpcserver/` | gRPC server — 16 RPC methods for SDKs |
+
+### gRPC API (16 RPCs)
+
+| Group | Methods |
+|---|---|
+| **Node** | `GetNodeInfo`, `SetAgentCard` |
+| **Peers** | `ConnectPeer`, `ListPeers`, `GetPeerCard` |
+| **Task Client** | `SendTask` (peer_id / skill_id / url), `GetTask`, `CancelTask`, `SubscribeTaskUpdates` |
+| **Task Server** | `SubscribeIncomingTasks`, `UpdateTaskStatus`, `CompleteTask`, `FailTask` |
+| **Streaming** | `SubscribeTaskStream`, `SendStreamingArtifact` |
+| **Discovery** | `Discover` |
+
+### HTTP Bridge
+
+The HTTP Bridge exposes an A2A-compatible HTTP endpoint, letting standard HTTP A2A agents interact with the P2P network:
+
+- `/.well-known/a2a-agent-card` — Agent Card discovery
+- `/` — JSON-RPC endpoint for task operations
+- Optional TLS and CORS support
+
+### Metrics
+
+When enabled, the daemon exposes Prometheus metrics on a configurable HTTP port:
+
+- `agentanycast_connected_peers` — current peer count
+- `agentanycast_tasks_total` — tasks by status
+- `agentanycast_task_duration_seconds` — task latency histogram
+- `agentanycast_bridge_requests_total` — HTTP bridge requests
+- `agentanycast_route_resolutions_total` — anycast resolution count
+- `agentanycast_stream_chunks_total` — streaming chunk count
+- `agentanycast_offline_queue_size` — queued offline messages
 
 ## Disclaimer
 
