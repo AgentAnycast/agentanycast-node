@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"time"
 
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -21,6 +22,11 @@ const (
 
 	// MaxMessageSize is the maximum size of a single framed message (16 MB).
 	MaxMessageSize = 16 * 1024 * 1024
+
+	// StreamReadTimeout is the max time to wait for a complete read from a stream.
+	StreamReadTimeout = 30 * time.Second
+	// StreamWriteTimeout is the max time to wait for a complete write to a stream.
+	StreamWriteTimeout = 10 * time.Second
 )
 
 // RegisterCardProtocol registers the Agent Card exchange stream handler.
@@ -31,6 +37,7 @@ func (h *Host) RegisterCardProtocol(localCardFn func() []byte) {
 		remotePeer := s.Conn().RemotePeer()
 
 		// Read the remote peer's card.
+		_ = s.SetReadDeadline(time.Now().Add(StreamReadTimeout))
 		data, err := readFramed(s)
 		if err != nil {
 			h.logger.Warn("failed to read peer card", "peer", remotePeer, "error", err)
@@ -42,6 +49,7 @@ func (h *Host) RegisterCardProtocol(localCardFn func() []byte) {
 		// Send our card back.
 		card := localCardFn()
 		if card != nil {
+			_ = s.SetWriteDeadline(time.Now().Add(StreamWriteTimeout))
 			if err := writeFramed(s, card); err != nil {
 				h.logger.Warn("failed to send card", "peer", remotePeer, "error", err)
 			}
@@ -58,11 +66,13 @@ func (h *Host) ExchangeCard(ctx context.Context, pid peer.ID, localCard []byte) 
 	defer s.Close()
 
 	// Send our card.
+	_ = s.SetWriteDeadline(time.Now().Add(StreamWriteTimeout))
 	if err := writeFramed(s, localCard); err != nil {
 		return fmt.Errorf("write card: %w", err)
 	}
 
 	// Read their card.
+	_ = s.SetReadDeadline(time.Now().Add(StreamReadTimeout))
 	data, err := readFramed(s)
 	if err != nil {
 		return fmt.Errorf("read peer card: %w", err)
@@ -81,6 +91,7 @@ func (h *Host) RegisterA2AProtocol(handler func(remotePeer peer.ID, data []byte)
 		reader := bufio.NewReader(s)
 
 		for {
+			_ = s.SetReadDeadline(time.Now().Add(StreamReadTimeout))
 			data, err := readFramedFrom(reader)
 			if err != nil {
 				if err != io.EOF {
@@ -101,6 +112,7 @@ func (h *Host) SendA2AMessage(ctx context.Context, pid peer.ID, data []byte, log
 	}
 	defer s.Close()
 
+	_ = s.SetWriteDeadline(time.Now().Add(StreamWriteTimeout))
 	if err := writeFramed(s, data); err != nil {
 		return fmt.Errorf("write a2a message: %w", err)
 	}

@@ -19,17 +19,28 @@ import (
 // SendFunc sends serialized bytes to a remote peer over libp2p.
 type SendFunc func(ctx interface{}, pid peer.ID, data []byte) error
 
+// PeerCardFunc returns the raw agent card bytes for a peer, if available.
+type PeerCardFunc func(pid peer.ID) ([]byte, bool)
+
+// dedupCacheSize is the max number of envelope IDs to remember for dedup.
+const dedupCacheSize = 1024
+
 // Router handles deserialization, routing, and dispatch of A2A messages
 // received over the libp2p network.
 type Router struct {
 	engine     *Engine
 	logger     *slog.Logger
 	sendFn     SendFunc
+	peerCardFn PeerCardFunc
 	ackTracker *AckTracker
 
 	mu              sync.RWMutex
 	incomingCh      chan *IncomingTaskEvent
 	taskUpdateSubs  map[string][]chan *TaskUpdateEvent
+
+	dedupMu    sync.Mutex
+	dedupCache map[string]struct{}
+	dedupOrder []string
 }
 
 // IncomingTaskEvent is emitted when a remote peer sends us a new task.
@@ -48,14 +59,18 @@ type TaskUpdateEvent struct {
 }
 
 // NewRouter creates a new A2A message router.
-func NewRouter(engine *Engine, logger *slog.Logger, sendFn SendFunc) *Router {
+// peerCardFn is optional — if nil, SenderCard will always be nil in IncomingTaskEvent.
+// onMaxRetries is optional — if nil, messages that exceed max ACK retries are dropped.
+func NewRouter(engine *Engine, logger *slog.Logger, sendFn SendFunc, peerCardFn PeerCardFunc, onMaxRetries MaxRetriesFunc) *Router {
 	r := &Router{
 		engine:         engine,
 		logger:         logger,
 		sendFn:         sendFn,
-		ackTracker:     NewAckTracker(sendFn, logger),
+		peerCardFn:     peerCardFn,
+		ackTracker:     NewAckTracker(sendFn, logger, onMaxRetries),
 		incomingCh:     make(chan *IncomingTaskEvent, 64),
 		taskUpdateSubs: make(map[string][]chan *TaskUpdateEvent),
+		dedupCache:     make(map[string]struct{}, dedupCacheSize),
 	}
 
 	// Wire engine callback to push updates to subscribers.
@@ -72,7 +87,7 @@ func NewRouter(engine *Engine, logger *slog.Logger, sendFn SendFunc) *Router {
 			select {
 			case ch <- evt:
 			default:
-				// Drop if subscriber is slow
+				r.logger.Warn("dropping task update for slow subscriber", "task_id", t.ID, "status", t.Status)
 			}
 		}
 	})
@@ -124,6 +139,14 @@ func (r *Router) HandleMessage(remotePeer peer.ID, data []byte) {
 		"type", env.Type.String(),
 		"envelope_id", env.EnvelopeId,
 	)
+
+	// Deduplicate by envelope ID (at-least-once → effectively-once).
+	if env.EnvelopeId != "" && env.Type != pb.EnvelopeType_ENVELOPE_TYPE_ACK {
+		if r.isDuplicate(env.EnvelopeId) {
+			r.logger.Debug("dropping duplicate envelope", "envelope_id", env.EnvelopeId)
+			return
+		}
+	}
 
 	switch env.Type {
 	case pb.EnvelopeType_ENVELOPE_TYPE_SEND_TASK:
@@ -188,10 +211,24 @@ func (r *Router) handleSendTask(remotePeer peer.ID, env *pb.A2AEnvelope) {
 		pbTask.Messages = []*pb.Message{payload.Message}
 	}
 
+	// Look up the sender's agent card.
+	var senderCard *pb.AgentCard
+	if r.peerCardFn != nil {
+		if cardData, ok := r.peerCardFn(remotePeer); ok {
+			var card pb.AgentCard
+			if err := proto.Unmarshal(cardData, &card); err != nil {
+				r.logger.Warn("failed to unmarshal sender card", "peer", remotePeer, "error", err)
+			} else {
+				senderCard = &card
+			}
+		}
+	}
+
 	// Emit to incoming tasks channel
 	select {
 	case r.incomingCh <- &IncomingTaskEvent{
 		Task:       pbTask,
+		SenderCard: senderCard,
 		SenderPeer: remotePeer,
 	}:
 	default:
@@ -272,6 +309,27 @@ func (r *Router) handleAck(_ peer.ID, env *pb.A2AEnvelope) {
 	}
 }
 
+// isDuplicate returns true if the envelope ID has been seen before, and records it.
+func (r *Router) isDuplicate(envelopeID string) bool {
+	r.dedupMu.Lock()
+	defer r.dedupMu.Unlock()
+
+	if _, ok := r.dedupCache[envelopeID]; ok {
+		return true
+	}
+
+	// Evict oldest if at capacity.
+	if len(r.dedupOrder) >= dedupCacheSize {
+		oldest := r.dedupOrder[0]
+		r.dedupOrder = r.dedupOrder[1:]
+		delete(r.dedupCache, oldest)
+	}
+
+	r.dedupCache[envelopeID] = struct{}{}
+	r.dedupOrder = append(r.dedupOrder, envelopeID)
+	return false
+}
+
 // AckTracker returns the router's AckTracker.
 func (r *Router) AckTracker() *AckTracker {
 	return r.ackTracker
@@ -297,6 +355,7 @@ func (r *Router) notifyUpdate(taskID string, status pb.TaskStatus, msg *pb.Messa
 		select {
 		case ch <- evt:
 		default:
+			r.logger.Warn("dropping task update for slow subscriber", "task_id", taskID, "status", status)
 		}
 	}
 }
@@ -458,4 +517,14 @@ func ProtoToTaskStatus(s pb.TaskStatus) TaskStatus {
 	default:
 		return StatusUnspecified
 	}
+}
+
+// ExtractEnvelopeID attempts to extract the envelope ID from serialized A2A
+// envelope data. If unmarshalling fails, it falls back to a UUID.
+func ExtractEnvelopeID(data []byte) string {
+	var env pb.A2AEnvelope
+	if err := proto.Unmarshal(data, &env); err == nil && env.EnvelopeId != "" {
+		return env.EnvelopeId
+	}
+	return uuid.New().String()
 }
