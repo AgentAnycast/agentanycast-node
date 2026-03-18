@@ -108,8 +108,8 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
-      - name: Run tests
-        run: go test ./...
+      - name: Run unit tests
+        run: go test -short -race -count=1 ./...
 
   build:
     name: Build Binary (linux-amd64)

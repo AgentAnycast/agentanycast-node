@@ -212,9 +212,7 @@ func TestSendTaskFlow(t *testing.T) {
 
 	// Send a task to ourselves (the no-op sendFn will succeed).
 	sendResp, err := client.SendTask(ctx, &pb.SendTaskRequest{
-		PeerId:        selfPeerID,
-		TargetSkillId: "summarize",
-		ContextId:     "ctx-test",
+		Target: &pb.SendTaskRequest_PeerId{PeerId: selfPeerID},
 		Message: &pb.Message{
 			MessageId: "msg-1",
 			Role:      pb.MessageRole_MESSAGE_ROLE_USER,
@@ -237,10 +235,6 @@ func TestSendTaskFlow(t *testing.T) {
 	if sentTask.Status != pb.TaskStatus_TASK_STATUS_SUBMITTED {
 		t.Fatalf("expected SUBMITTED, got %v", sentTask.Status)
 	}
-	if sentTask.ContextId != "ctx-test" {
-		t.Fatalf("expected context ctx-test, got %s", sentTask.ContextId)
-	}
-
 	// Verify we can retrieve the task.
 	getResp, err := client.GetTask(ctx, &pb.GetTaskRequest{TaskId: sentTask.TaskId})
 	if err != nil {
@@ -303,8 +297,7 @@ func TestFailTaskFlow(t *testing.T) {
 
 	// Send a task to ourselves.
 	sendResp, err := client.SendTask(ctx, &pb.SendTaskRequest{
-		PeerId:        selfPeerID,
-		TargetSkillId: "summarize",
+		Target: &pb.SendTaskRequest_PeerId{PeerId: selfPeerID},
 		Message: &pb.Message{
 			MessageId: "msg-f1",
 			Role:      pb.MessageRole_MESSAGE_ROLE_USER,
@@ -395,7 +388,7 @@ func TestCancelTaskFlow(t *testing.T) {
 
 	// Send a task.
 	sendResp, err := client.SendTask(ctx, &pb.SendTaskRequest{
-		PeerId: selfPeerID,
+		Target: &pb.SendTaskRequest_PeerId{PeerId: selfPeerID},
 		Message: &pb.Message{
 			Role: pb.MessageRole_MESSAGE_ROLE_USER,
 			Parts: []*pb.Part{

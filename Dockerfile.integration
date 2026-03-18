@@ -1,0 +1,27 @@
+# Integration build — context is the parent directory containing all repos.
+# This allows the Go replace directive (../agentanycast-proto) to resolve.
+FROM golang:1.24-alpine AS builder
+
+RUN apk add --no-cache git
+
+WORKDIR /src
+
+# Copy proto dependency first.
+COPY agentanycast-proto/ /src/agentanycast-proto/
+
+# Copy node source and download deps.
+COPY agentanycast-node/go.mod agentanycast-node/go.sum /src/agentanycast-node/
+WORKDIR /src/agentanycast-node
+RUN go mod download
+
+COPY agentanycast-node/ /src/agentanycast-node/
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /agentanycastd ./cmd/agentanycastd
+
+# Runtime stage
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates
+COPY --from=builder /agentanycastd /usr/local/bin/agentanycastd
+
+EXPOSE 50051/tcp
+
+ENTRYPOINT ["/usr/local/bin/agentanycastd"]
