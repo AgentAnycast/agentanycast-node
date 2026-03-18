@@ -123,11 +123,21 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 	// Start forwarding incoming tasks from router to subscribers
 	go s.forwardIncomingTasks(ctx)
 
-	// Graceful shutdown
+	// Graceful shutdown with timeout to prevent hanging on long-lived streams.
 	go func() {
 		<-ctx.Done()
 		s.logger.Info("gRPC server shutting down")
-		srv.GracefulStop()
+		done := make(chan struct{})
+		go func() {
+			srv.GracefulStop()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			s.logger.Warn("graceful stop timed out, forcing stop")
+			srv.Stop()
+		}
 	}()
 
 	return srv.Serve(lis)
@@ -205,7 +215,9 @@ func (s *Server) SetAgentCard(ctx context.Context, req *pb.SetAgentCardRequest) 
 	// Use background context since the gRPC request context is short-lived.
 	for _, pid := range s.host.ConnectedPeers() {
 		go func(pid peer.ID) {
-			if err := s.host.ExchangeCard(context.Background(), pid, raw); err != nil {
+			exCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := s.host.ExchangeCard(exCtx, pid, raw); err != nil {
 				s.logger.Debug("card push failed", "peer", pid, "error", err)
 			}
 		}(pid)
@@ -257,7 +269,9 @@ func (s *Server) ConnectPeer(ctx context.Context, req *pb.ConnectPeerRequest) (*
 	cardRaw := s.GetLocalCardBytes()
 	if cardRaw != nil {
 		go func() {
-			if err := s.host.ExchangeCard(context.Background(), pid, cardRaw); err != nil {
+			exCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := s.host.ExchangeCard(exCtx, pid, cardRaw); err != nil {
 				s.logger.Debug("card exchange after connect failed", "peer", pid, "error", err)
 			}
 		}()
@@ -379,12 +393,16 @@ func (s *Server) CancelTask(ctx context.Context, req *pb.CancelTaskRequest) (*pb
 		return nil, status.Errorf(codes.NotFound, "%v", err)
 	}
 
-	// Send cancel to remote peer
+	// Send cancel to remote peer (use background context since the RPC ctx is short-lived).
 	if task.OriginatorPeerID != "local" {
 		pid, err := peer.Decode(task.OriginatorPeerID)
 		if err == nil {
 			go func() {
-				_ = s.router.SendFail(ctx, pid, task.ID, "canceled by local node")
+				bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if err := s.router.SendFail(bgCtx, pid, task.ID, "canceled by local node"); err != nil {
+					s.logger.Warn("failed to send cancel to originator", "task_id", task.ID, "peer", pid, "error", err)
+				}
 			}()
 		}
 	}
@@ -393,7 +411,10 @@ func (s *Server) CancelTask(ctx context.Context, req *pb.CancelTaskRequest) (*pb
 		return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
 	}
 
-	task, _ = s.engine.GetTask(req.TaskId)
+	task, err = s.engine.GetTask(req.TaskId)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "get task after cancel: %v", err)
+	}
 	return &pb.CancelTaskResponse{
 		Task: &pb.Task{
 			TaskId:           task.ID,
@@ -490,7 +511,11 @@ func (s *Server) UpdateTaskStatus(ctx context.Context, req *pb.UpdateTaskStatusR
 		pid, err := peer.Decode(task.OriginatorPeerID)
 		if err == nil {
 			go func() {
-				_ = s.router.SendStatusUpdate(ctx, pid, req.TaskId, req.Status, req.Message)
+				bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if err := s.router.SendStatusUpdate(bgCtx, pid, req.TaskId, req.Status, req.Message); err != nil {
+					s.logger.Warn("failed to send status update to originator", "task_id", req.TaskId, "peer", pid, "error", err)
+				}
 			}()
 		}
 	}
@@ -513,7 +538,11 @@ func (s *Server) CompleteTask(ctx context.Context, req *pb.CompleteTaskRequest) 
 		pid, err := peer.Decode(task.OriginatorPeerID)
 		if err == nil {
 			go func() {
-				_ = s.router.SendComplete(ctx, pid, req.TaskId, req.Artifacts, req.Message)
+				bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if err := s.router.SendComplete(bgCtx, pid, req.TaskId, req.Artifacts, req.Message); err != nil {
+					s.logger.Warn("failed to send completion to originator", "task_id", req.TaskId, "peer", pid, "error", err)
+				}
 			}()
 		}
 	}
@@ -536,7 +565,11 @@ func (s *Server) FailTask(ctx context.Context, req *pb.FailTaskRequest) (*pb.Fai
 		pid, err := peer.Decode(task.OriginatorPeerID)
 		if err == nil {
 			go func() {
-				_ = s.router.SendFail(ctx, pid, req.TaskId, req.ErrorMessage)
+				bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if err := s.router.SendFail(bgCtx, pid, req.TaskId, req.ErrorMessage); err != nil {
+					s.logger.Warn("failed to send failure to originator", "task_id", req.TaskId, "peer", pid, "error", err)
+				}
 			}()
 		}
 	}
