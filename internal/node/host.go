@@ -8,9 +8,11 @@ import (
 	"sync"
 
 	"github.com/libp2p/go-libp2p"
+	dht "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/routing"
 	libp2pcrypto "github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 	"github.com/libp2p/go-libp2p/p2p/security/noise"
@@ -29,6 +31,9 @@ type HostConfig struct {
 	EnableRelayClient  bool
 	EnableHolePunching bool
 	EnableMDNS         bool
+	// v0.3: DHT discovery
+	EnableDHT bool
+	DHTMode   string // "auto" (default), "server", "client"
 }
 
 // Host wraps a libp2p host with AgentAnycast-specific logic.
@@ -43,6 +48,8 @@ type Host struct {
 	OnPeerConnected func(peer.ID)
 	// store is used for persisting agent cards across restarts.
 	store cardStore
+	// DHT is the Kademlia DHT instance (nil if DHT is disabled).
+	DHT *dht.IpfsDHT
 }
 
 // cardStore is the subset of store.Store used for card persistence.
@@ -82,6 +89,23 @@ func NewHost(ctx context.Context, cfg HostConfig, logger *slog.Logger) (*Host, e
 		opts = append(opts, libp2p.EnableHolePunching())
 	}
 
+	// Enable DHT-based content routing if configured.
+	var kadDHT *dht.IpfsDHT
+	if cfg.EnableDHT {
+		opts = append(opts, libp2p.Routing(func(h host.Host) (routing.PeerRouting, error) {
+			dhtMode := dht.ModeAutoServer
+			switch cfg.DHTMode {
+			case "server":
+				dhtMode = dht.ModeServer
+			case "client":
+				dhtMode = dht.ModeClient
+			}
+			var err error
+			kadDHT, err = dht.New(ctx, h, dht.Mode(dhtMode))
+			return kadDHT, err
+		}))
+	}
+
 	h, err := libp2p.New(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("create libp2p host: %w", err)
@@ -91,6 +115,7 @@ func NewHost(ctx context.Context, cfg HostConfig, logger *slog.Logger) (*Host, e
 		Host:      h,
 		logger:    logger,
 		peerCards: make(map[peer.ID][]byte),
+		DHT:       kadDHT,
 	}
 
 	// Register connection notification handler.

@@ -66,6 +66,9 @@ type AnycastConfig struct {
 	CacheTTL        string `toml:"cache_ttl"`
 	AutoRegister    bool   `toml:"auto_register"`
 	RegistryAddr    string `toml:"registry_addr"`
+	// v0.3: DHT-based discovery (can work alongside RegistryAddr).
+	EnableDHT bool   `toml:"enable_dht"`
+	DHTMode   string `toml:"dht_mode"` // "auto" (default), "server", "client"
 }
 
 // MetricsConfig holds Prometheus metrics configuration.

@@ -26,6 +26,7 @@ import (
 	"github.com/agentanycast/agentanycast-node/internal/a2a"
 	"github.com/agentanycast/agentanycast-node/internal/anycast"
 	"github.com/agentanycast/agentanycast-node/internal/bridge"
+	agentcrypto "github.com/agentanycast/agentanycast-node/internal/crypto"
 	"github.com/agentanycast/agentanycast-node/internal/metrics"
 	"github.com/agentanycast/agentanycast-node/internal/node"
 	"github.com/agentanycast/agentanycast-node/internal/store"
@@ -208,6 +209,11 @@ func (s *Server) SetAgentCard(ctx context.Context, req *pb.SetAgentCardRequest) 
 		req.Card.P2PExtension = &pb.P2PExtension{}
 	}
 	req.Card.P2PExtension.PeerId = s.host.ID().String()
+
+	// Auto-populate did:key from the host's PeerID.
+	if didKey, err := agentcrypto.PeerIDToDIDKey(s.host.ID()); err == nil {
+		req.Card.P2PExtension.DidKey = didKey
+	}
 
 	raw, err := proto.Marshal(req.Card)
 	if err != nil {

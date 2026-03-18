@@ -128,6 +128,8 @@ func main() {
 		EnableRelayClient:  cfg.EnableRelayClient,
 		EnableHolePunching: cfg.EnableHolePunching,
 		EnableMDNS:         cfg.EnableMDNS,
+		EnableDHT:          cfg.Anycast.EnableDHT,
+		DHTMode:            cfg.Anycast.DHTMode,
 	}, logger)
 	if err != nil {
 		logger.Error("failed to create host", "error", err)
@@ -178,13 +180,37 @@ func main() {
 	})
 	defer router.Close()
 
-	// ── v0.2: Anycast Router ────────────────────────────────
+	// ── Anycast Router ──────────────────────────────────────
 	var anycastRtr *anycast.Router
-	if cfg.Anycast.RegistryAddr != "" {
-		discovery, err := anycast.NewRegistryDiscovery(cfg.Anycast.RegistryAddr, logger)
-		if err != nil {
-			logger.Warn("failed to connect to registry, anycast routing disabled", "error", err)
-		} else {
+	{
+		var providers []anycast.DiscoveryProvider
+
+		// v0.2: Relay registry discovery.
+		if cfg.Anycast.RegistryAddr != "" {
+			regDiscovery, err := anycast.NewRegistryDiscovery(cfg.Anycast.RegistryAddr, logger)
+			if err != nil {
+				logger.Warn("failed to connect to registry", "error", err)
+			} else {
+				providers = append(providers, regDiscovery)
+				logger.Info("registry discovery enabled", "addr", cfg.Anycast.RegistryAddr)
+			}
+		}
+
+		// v0.3: DHT-based discovery.
+		if cfg.Anycast.EnableDHT && h.DHT != nil {
+			dhtDiscovery := anycast.NewDHTDiscovery(h.DHT, h, logger)
+			providers = append(providers, dhtDiscovery)
+			logger.Info("DHT discovery enabled")
+		}
+
+		if len(providers) > 0 {
+			var discovery anycast.DiscoveryProvider
+			if len(providers) == 1 {
+				discovery = providers[0]
+			} else {
+				discovery = anycast.NewCompositeDiscovery(logger, providers...)
+			}
+
 			cacheTTL, _ := time.ParseDuration(cfg.Anycast.CacheTTL)
 			if cacheTTL == 0 {
 				cacheTTL = 30 * time.Second
@@ -196,7 +222,7 @@ func main() {
 				Logger:    logger,
 			})
 			defer anycastRtr.Close()
-			logger.Info("anycast router initialized", "registry", cfg.Anycast.RegistryAddr)
+			logger.Info("anycast router initialized", "providers", len(providers))
 		}
 	}
 
