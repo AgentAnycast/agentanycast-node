@@ -142,19 +142,31 @@ func main() {
 		logger.Warn("task recovery failed", "error", err)
 	}
 
-	offlineQueue := a2a.NewOfflineQueue(st, logger)
+	offlineQueueTTL, err := time.ParseDuration(cfg.OfflineQueueTTL)
+	if err != nil {
+		logger.Warn("invalid offline_queue_ttl, using default 24h", "value", cfg.OfflineQueueTTL, "error", err)
+		offlineQueueTTL = 24 * time.Hour
+	}
+	offlineQueue := a2a.NewOfflineQueue(st, logger, offlineQueueTTL)
 
 	router := a2a.NewRouter(engine, logger, func(sendCtx interface{}, pid peer.ID, data []byte) error {
 		if err := h.SendA2AMessage(ctx, pid, data, logger); err != nil {
-			// Peer unreachable — queue for later delivery
-			envelopeID := fmt.Sprintf("%d", time.Now().UnixNano())
+			// Peer unreachable — queue for later delivery.
+			// Extract the real envelope ID from the serialized data.
+			envelopeID := a2a.ExtractEnvelopeID(data)
 			if qErr := offlineQueue.Enqueue(pid.String(), envelopeID, data); qErr != nil {
 				logger.Warn("failed to enqueue offline message", "error", qErr)
 			}
 			return err
 		}
 		return nil
+	}, h.GetPeerCard, func(target peer.ID, envelopeID string, data []byte) {
+		// ACK retries exhausted — fall back to offline queue.
+		if qErr := offlineQueue.Enqueue(target.String(), envelopeID, data); qErr != nil {
+			logger.Warn("failed to enqueue after max retries", "envelope_id", envelopeID, "error", qErr)
+		}
 	})
+	defer router.Close()
 
 	// ── gRPC Server ─────────────────────────────────────────
 	grpcSrv := grpcserver.New(grpcserver.Config{

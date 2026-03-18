@@ -15,7 +15,7 @@ func openTestQueue(t *testing.T) *OfflineQueue {
 		t.Fatalf("failed to open store: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	return NewOfflineQueue(st, testLogger())
+	return NewOfflineQueue(st, testLogger(), 0)
 }
 
 func TestEnqueueAndFlush(t *testing.T) {

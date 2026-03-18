@@ -28,12 +28,18 @@ type pendingMessage struct {
 	nextRetry  time.Time
 }
 
+// MaxRetriesFunc is called when a message exceeds max retries without an ACK.
+// It receives the target peer, envelope ID, and the serialized message data.
+type MaxRetriesFunc func(target peer.ID, envelopeID string, data []byte)
+
 // AckTracker tracks outgoing messages and retries them if no ACK is received
 // within a timeout. It uses exponential backoff (2s, 4s, 8s) with a maximum
-// of 3 retries.
+// of 3 retries. When retries are exhausted, the optional OnMaxRetries callback
+// is invoked (e.g. to enqueue the message for offline delivery).
 type AckTracker struct {
-	sendFn SendFunc
-	logger *slog.Logger
+	sendFn        SendFunc
+	onMaxRetries  MaxRetriesFunc
+	logger        *slog.Logger
 
 	mu      sync.Mutex
 	pending map[string]*pendingMessage // envelopeID -> pending
@@ -43,13 +49,15 @@ type AckTracker struct {
 }
 
 // NewAckTracker creates a new AckTracker that retries unacknowledged messages.
-func NewAckTracker(sendFn SendFunc, logger *slog.Logger) *AckTracker {
+// onMaxRetries is optional — if nil, failed messages are silently dropped.
+func NewAckTracker(sendFn SendFunc, logger *slog.Logger, onMaxRetries MaxRetriesFunc) *AckTracker {
 	at := &AckTracker{
-		sendFn:  sendFn,
-		logger:  logger,
-		pending: make(map[string]*pendingMessage),
-		stopCh:  make(chan struct{}),
-		done:    make(chan struct{}),
+		sendFn:       sendFn,
+		onMaxRetries: onMaxRetries,
+		logger:       logger,
+		pending:      make(map[string]*pendingMessage),
+		stopCh:       make(chan struct{}),
+		done:         make(chan struct{}),
 	}
 	go at.retryLoop()
 	return at
@@ -135,26 +143,33 @@ func (at *AckTracker) processRetries(now time.Time) {
 	at.mu.Lock()
 	// Collect messages that need retrying or expiring.
 	var toRetry []*pendingMessage
-	var toRemove []string
-	for id, pm := range at.pending {
+	var expired []*pendingMessage
+	for _, pm := range at.pending {
 		if now.Before(pm.nextRetry) {
 			continue
 		}
 		if pm.retries >= defaultMaxRetries {
-			at.logger.Warn("message delivery failed after max retries",
-				"envelope_id", id,
-				"target", pm.target,
-				"retries", pm.retries,
-			)
-			toRemove = append(toRemove, id)
+			expired = append(expired, pm)
 		} else {
 			toRetry = append(toRetry, pm)
 		}
 	}
-	for _, id := range toRemove {
-		delete(at.pending, id)
+	for _, pm := range expired {
+		delete(at.pending, pm.envelopeID)
 	}
 	at.mu.Unlock()
+
+	// Invoke callback for expired messages outside the lock.
+	for _, pm := range expired {
+		at.logger.Warn("message delivery failed after max retries",
+			"envelope_id", pm.envelopeID,
+			"target", pm.target,
+			"retries", pm.retries,
+		)
+		if at.onMaxRetries != nil {
+			at.onMaxRetries(pm.target, pm.envelopeID, pm.data)
+		}
+	}
 
 	// Send retries outside the lock to avoid blocking.
 	for _, pm := range toRetry {

@@ -17,8 +17,6 @@ import (
 	"github.com/libp2p/go-libp2p/p2p/muxer/yamux"
 	libp2pquic "github.com/libp2p/go-libp2p/p2p/transport/quic"
 	"github.com/libp2p/go-libp2p/p2p/transport/tcp"
-	relayv2 "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/client"
-	"github.com/libp2p/go-libp2p/p2p/protocol/holepunch"
 
 	"github.com/multiformats/go-multiaddr"
 )
@@ -128,10 +126,6 @@ func NewHost(ctx context.Context, cfg HostConfig, logger *slog.Logger) (*Host, e
 			logger.Info("mDNS discovery started")
 		}
 	}
-
-	// Suppress unused import warnings for packages used in opts.
-	_ = relayv2.Reserve
-	_ = holepunch.DirectDialEvt{}
 
 	return bh, nil
 }
