@@ -19,8 +19,11 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 
 	"github.com/agentanycast/agentanycast-node/internal/a2a"
+	"github.com/agentanycast/agentanycast-node/internal/anycast"
+	"github.com/agentanycast/agentanycast-node/internal/bridge"
 	"github.com/agentanycast/agentanycast-node/internal/config"
 	"github.com/agentanycast/agentanycast-node/internal/crypto"
+	"github.com/agentanycast/agentanycast-node/internal/metrics"
 	"github.com/agentanycast/agentanycast-node/internal/node"
 	"github.com/agentanycast/agentanycast-node/internal/store"
 	"github.com/agentanycast/agentanycast-node/pkg/grpcserver"
@@ -35,6 +38,7 @@ func main() {
 		flagGRPCListen     = flag.String("grpc-listen", "", "gRPC listen address (unix:// or tcp://)")
 		flagLogLevel       = flag.String("log-level", "", "log level (debug/info/warn/error)")
 		flagBootstrapPeers = flag.String("bootstrap-peers", "", "comma-separated bootstrap peer multiaddrs")
+		flagBridgeListen   = flag.String("bridge-listen", "", "HTTP Bridge listen address (e.g., :8080)")
 		flagVersion        = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
@@ -72,6 +76,10 @@ func main() {
 		if len(peers) > 0 {
 			cfg.BootstrapPeers = peers
 		}
+	}
+	if *flagBridgeListen != "" {
+		cfg.Bridge.Enabled = true
+		cfg.Bridge.Listen = *flagBridgeListen
 	}
 
 	// ── Logger ───────────────────────────────────────────────
@@ -149,10 +157,12 @@ func main() {
 	}
 	offlineQueue := a2a.NewOfflineQueue(st, logger, offlineQueueTTL)
 
+	// v0.2: Stream Manager
+	streamMgr := a2a.NewStreamManager(logger)
+
 	router := a2a.NewRouter(engine, logger, func(sendCtx interface{}, pid peer.ID, data []byte) error {
 		if err := h.SendA2AMessage(ctx, pid, data, logger); err != nil {
 			// Peer unreachable — queue for later delivery.
-			// Extract the real envelope ID from the serialized data.
 			envelopeID := a2a.ExtractEnvelopeID(data)
 			if qErr := offlineQueue.Enqueue(pid.String(), envelopeID, data); qErr != nil {
 				logger.Warn("failed to enqueue offline message", "error", qErr)
@@ -168,13 +178,41 @@ func main() {
 	})
 	defer router.Close()
 
+	// ── v0.2: Anycast Router ────────────────────────────────
+	var anycastRtr *anycast.Router
+	if cfg.Anycast.RegistryAddr != "" {
+		discovery, err := anycast.NewRegistryDiscovery(cfg.Anycast.RegistryAddr, logger)
+		if err != nil {
+			logger.Warn("failed to connect to registry, anycast routing disabled", "error", err)
+		} else {
+			cacheTTL, _ := time.ParseDuration(cfg.Anycast.CacheTTL)
+			if cacheTTL == 0 {
+				cacheTTL = 30 * time.Second
+			}
+			anycastRtr = anycast.NewRouter(anycast.RouterConfig{
+				Discovery: discovery,
+				Strategy:  &anycast.RandomStrategy{},
+				CacheTTL:  cacheTTL,
+				Logger:    logger,
+			})
+			defer anycastRtr.Close()
+			logger.Info("anycast router initialized", "registry", cfg.Anycast.RegistryAddr)
+		}
+	}
+
+	// ── v0.2: HTTP Bridge (outbound client, always available) ─
+	outboundBridge := bridge.NewOutboundClient(logger)
+
 	// ── gRPC Server ─────────────────────────────────────────
 	grpcSrv := grpcserver.New(grpcserver.Config{
-		Host:   h,
-		Engine: engine,
-		Router: router,
-		Store:  st,
-		Logger: logger,
+		Host:           h,
+		Engine:         engine,
+		Router:         router,
+		Store:          st,
+		Logger:         logger,
+		AnycastRouter:  anycastRtr,
+		OutboundBridge: outboundBridge,
+		StreamManager:  streamMgr,
 	})
 
 	// Register Card exchange protocol — returns serialized card from gRPC server state.
@@ -205,12 +243,48 @@ func main() {
 		}
 	}
 
+	// ── v0.2: HTTP Bridge Server (optional) ─────────────────
+	if cfg.Bridge.Enabled {
+		inbound := bridge.NewInboundHandler(grpcSrv, logger)
+		baseURL := bridge.BaseURL(cfg.Bridge.Listen, cfg.Bridge.TLSCert != "")
+		cardEndpoint := bridge.NewCardEndpoint(grpcSrv.GetLocalCard, baseURL, logger)
+
+		bridgeSrv := bridge.NewServer(bridge.Config{
+			Listen:      cfg.Bridge.Listen,
+			TLSCert:     cfg.Bridge.TLSCert,
+			TLSKey:      cfg.Bridge.TLSKey,
+			CORSOrigins: cfg.Bridge.CORSOrigins,
+		}, inbound, cardEndpoint, logger)
+
+		go func() {
+			if err := bridgeSrv.ListenAndServe(); err != nil {
+				logger.Error("HTTP bridge server error", "error", err)
+			}
+		}()
+		defer bridgeSrv.Shutdown(context.Background())
+
+		logger.Info("HTTP bridge enabled", "addr", cfg.Bridge.Listen)
+	}
+
+	// ── v0.2: Metrics Server (optional) ─────────────────────
+	if cfg.Metrics.Enabled {
+		metricsSrv := metrics.NewServer(cfg.Metrics.Listen, logger)
+		go func() {
+			if err := metricsSrv.ListenAndServe(); err != nil {
+				logger.Error("metrics server error", "error", err)
+			}
+		}()
+		defer metricsSrv.Shutdown(context.Background())
+	}
+
 	// ── Print Startup Info ───────────────────────────────────
 	logger.Info("agentanycastd started",
 		"version", version,
 		"peer_id", h.ID().String(),
 		"addresses", h.Addrs(),
 		"grpc_listen", cfg.GRPCListen,
+		"bridge_enabled", cfg.Bridge.Enabled,
+		"metrics_enabled", cfg.Metrics.Enabled,
 	)
 
 	// Print to stdout for SDK to parse.
@@ -225,6 +299,29 @@ func main() {
 		grpcErrCh <- grpcSrv.ListenAndServe(ctx, cfg.GRPCListen)
 	}()
 
+	// ── v0.2: Auto-register Skills with Relay Registry ──────
+	if anycastRtr != nil && cfg.Anycast.AutoRegister {
+		go func() {
+			// Wait a bit for bootstrap connections to establish.
+			time.Sleep(3 * time.Second)
+			card := grpcSrv.GetLocalCard()
+			if card != nil && len(card.Skills) > 0 {
+				skills := make([]anycast.SkillInfo, 0, len(card.Skills))
+				for _, s := range card.Skills {
+					skills = append(skills, anycast.SkillInfo{
+						SkillID:     s.Id,
+						Description: s.Description,
+					})
+				}
+				if err := anycastRtr.RegisterSkills(ctx, h.ID().String(), skills, card.Name, card.Description); err != nil {
+					logger.Warn("auto skill registration failed", "error", err)
+				} else {
+					logger.Info("skills auto-registered with relay", "count", len(skills))
+				}
+			}
+		}()
+	}
+
 	// ── Wait for Shutdown ────────────────────────────────────
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -235,6 +332,15 @@ func main() {
 	case err := <-grpcErrCh:
 		if err != nil {
 			logger.Error("gRPC server error", "error", err)
+		}
+	}
+
+	// v0.2: Unregister skills on shutdown.
+	if anycastRtr != nil {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		if err := anycastRtr.UnregisterSkills(shutdownCtx, h.ID().String(), nil); err != nil {
+			logger.Warn("skill unregistration failed", "error", err)
 		}
 	}
 

@@ -24,6 +24,9 @@ import (
 
 	pb "github.com/agentanycast/agentanycast-proto/gen/go/agentanycast/v1"
 	"github.com/agentanycast/agentanycast-node/internal/a2a"
+	"github.com/agentanycast/agentanycast-node/internal/anycast"
+	"github.com/agentanycast/agentanycast-node/internal/bridge"
+	"github.com/agentanycast/agentanycast-node/internal/metrics"
 	"github.com/agentanycast/agentanycast-node/internal/node"
 	"github.com/agentanycast/agentanycast-node/internal/store"
 )
@@ -32,12 +35,15 @@ import (
 type Server struct {
 	pb.UnimplementedNodeServiceServer
 
-	host      *node.Host
-	engine    *a2a.Engine
-	router    *a2a.Router
-	store     *store.Store
-	logger    *slog.Logger
-	startedAt time.Time
+	host           *node.Host
+	engine         *a2a.Engine
+	router         *a2a.Router
+	store          *store.Store
+	logger         *slog.Logger
+	startedAt      time.Time
+	anycastRouter  *anycast.Router  // v0.2: Anycast routing
+	outboundBridge *bridge.OutboundClient // v0.2: HTTP Bridge outbound
+	streamMgr      *a2a.StreamManager     // v0.2: Streaming
 
 	mu       sync.RWMutex
 	card     *pb.AgentCard
@@ -50,22 +56,28 @@ type Server struct {
 
 // Config holds configuration for the gRPC server.
 type Config struct {
-	Host    *node.Host
-	Engine  *a2a.Engine
-	Router  *a2a.Router
-	Store   *store.Store
-	Logger  *slog.Logger
+	Host           *node.Host
+	Engine         *a2a.Engine
+	Router         *a2a.Router
+	Store          *store.Store
+	Logger         *slog.Logger
+	AnycastRouter  *anycast.Router       // v0.2
+	OutboundBridge *bridge.OutboundClient // v0.2
+	StreamManager  *a2a.StreamManager     // v0.2
 }
 
 // New creates a new gRPC server.
 func New(cfg Config) *Server {
 	s := &Server{
-		host:      cfg.Host,
-		engine:    cfg.Engine,
-		router:    cfg.Router,
-		store:     cfg.Store,
-		logger:    cfg.Logger,
-		startedAt: time.Now(),
+		host:           cfg.Host,
+		engine:         cfg.Engine,
+		router:         cfg.Router,
+		store:          cfg.Store,
+		logger:         cfg.Logger,
+		startedAt:      time.Now(),
+		anycastRouter:  cfg.AnycastRouter,
+		outboundBridge: cfg.OutboundBridge,
+		streamMgr:      cfg.StreamManager,
 	}
 
 	// Recover persisted self card from store if available.
@@ -153,6 +165,7 @@ func (s *Server) forwardIncomingTasks(ctx context.Context) {
 			if !ok {
 				return
 			}
+			metrics.TasksTotal.WithLabelValues("received", "submitted").Inc()
 			s.subsMu.Lock()
 			for _, ch := range s.incomingTaskSubs {
 				select {
@@ -329,35 +342,103 @@ func (s *Server) GetPeerCard(ctx context.Context, req *pb.GetPeerCardRequest) (*
 // ── Task Client Operations ─────────────────────────────────
 
 func (s *Server) SendTask(ctx context.Context, req *pb.SendTaskRequest) (*pb.SendTaskResponse, error) {
-	if req.PeerId == "" {
-		return nil, status.Error(codes.InvalidArgument, "peer_id is required")
-	}
 	if req.Message == nil {
 		return nil, status.Error(codes.InvalidArgument, "message is required")
 	}
 
-	pid, err := peer.Decode(req.PeerId)
+	switch target := req.Target.(type) {
+	case *pb.SendTaskRequest_PeerId:
+		return s.sendTaskToPeer(ctx, target.PeerId, req.Message, req.Metadata)
+
+	case *pb.SendTaskRequest_SkillId:
+		return s.sendTaskBySkill(ctx, target.SkillId, req.Message, req.Metadata)
+
+	case *pb.SendTaskRequest_Url:
+		return s.sendTaskViaHTTPBridge(ctx, target.Url, req.Message, req.Metadata)
+
+	default:
+		return nil, status.Error(codes.InvalidArgument, "target (peer_id, skill_id, or url) is required")
+	}
+}
+
+// sendTaskToPeer sends a task directly to a known PeerID.
+func (s *Server) sendTaskToPeer(ctx context.Context, peerIDStr string, msg *pb.Message, metadata map[string]string) (*pb.SendTaskResponse, error) {
+	start := time.Now()
+
+	pid, err := peer.Decode(peerIDStr)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid peer_id: %v", err)
 	}
 
-	task, err := s.router.SendTask(ctx, pid, req.Message, req.TargetSkillId, req.ContextId)
+	task, err := s.router.SendTask(ctx, pid, msg, "", "")
 	if err != nil {
+		metrics.TasksTotal.WithLabelValues("sent", "error").Inc()
 		return nil, status.Errorf(codes.Internal, "send task: %v", err)
 	}
 
-	pbTask := &pb.Task{
+	metrics.TasksTotal.WithLabelValues("sent", "submitted").Inc()
+	metrics.TaskDuration.WithLabelValues("sent").Observe(time.Since(start).Seconds())
+	return &pb.SendTaskResponse{Task: taskToProto(task, msg)}, nil
+}
+
+// sendTaskBySkill resolves a skill to a peer via Anycast routing, then sends the task.
+func (s *Server) sendTaskBySkill(ctx context.Context, skillID string, msg *pb.Message, metadata map[string]string) (*pb.SendTaskResponse, error) {
+	start := time.Now()
+
+	if s.anycastRouter == nil {
+		return nil, status.Error(codes.Unavailable, "anycast routing is not configured")
+	}
+
+	targetPeer, err := s.anycastRouter.Resolve(ctx, skillID)
+	if err != nil {
+		metrics.RouteResolutions.WithLabelValues("miss").Inc()
+		return nil, status.Errorf(codes.NotFound, "no agent found for skill %q: %v", skillID, err)
+	}
+	metrics.RouteResolutions.WithLabelValues("hit").Inc()
+
+	task, err := s.router.SendTask(ctx, targetPeer, msg, skillID, "")
+	if err != nil {
+		// Invalidate cache on send failure so we try a different peer next time.
+		s.anycastRouter.InvalidateCache(skillID)
+		metrics.TasksTotal.WithLabelValues("sent", "error").Inc()
+		return nil, status.Errorf(codes.Internal, "send task to %s: %v", targetPeer, err)
+	}
+
+	metrics.TasksTotal.WithLabelValues("sent", "submitted").Inc()
+	metrics.TaskDuration.WithLabelValues("sent").Observe(time.Since(start).Seconds())
+	return &pb.SendTaskResponse{Task: taskToProto(task, msg)}, nil
+}
+
+// sendTaskViaHTTPBridge sends a task to an external HTTP A2A agent.
+func (s *Server) sendTaskViaHTTPBridge(ctx context.Context, targetURL string, msg *pb.Message, metadata map[string]string) (*pb.SendTaskResponse, error) {
+	start := time.Now()
+
+	if s.outboundBridge == nil {
+		return nil, status.Error(codes.Unavailable, "HTTP bridge is not configured")
+	}
+
+	resultTask, err := s.outboundBridge.SendTask(ctx, targetURL, msg, metadata)
+	if err != nil {
+		metrics.BridgeRequests.WithLabelValues("outbound", "error").Inc()
+		return nil, status.Errorf(codes.Internal, "HTTP bridge to %s: %v", targetURL, err)
+	}
+
+	metrics.BridgeRequests.WithLabelValues("outbound", "ok").Inc()
+	metrics.TaskDuration.WithLabelValues("sent").Observe(time.Since(start).Seconds())
+	return &pb.SendTaskResponse{Task: resultTask}, nil
+}
+
+func taskToProto(task *a2a.Task, msg *pb.Message) *pb.Task {
+	return &pb.Task{
 		TaskId:           task.ID,
 		ContextId:        task.ContextID,
 		Status:           a2a.TaskStatusToProto(task.Status),
 		TargetSkillId:    task.TargetSkillID,
 		OriginatorPeerId: task.OriginatorPeerID,
-		Messages:         []*pb.Message{req.Message},
+		Messages:         []*pb.Message{msg},
 		CreatedAt:        timestamppb.New(task.CreatedAt),
 		UpdatedAt:        timestamppb.New(task.UpdatedAt),
 	}
-
-	return &pb.SendTaskResponse{Task: pbTask}, nil
 }
 
 func (s *Server) GetTask(ctx context.Context, req *pb.GetTaskRequest) (*pb.GetTaskResponse, error) {
@@ -575,4 +656,133 @@ func (s *Server) FailTask(ctx context.Context, req *pb.FailTaskRequest) (*pb.Fai
 	}
 
 	return &pb.FailTaskResponse{}, nil
+}
+
+// ── Streaming (v0.2) ──────────────────────────────────────
+
+func (s *Server) SubscribeTaskStream(req *pb.SubscribeTaskStreamRequest, stream pb.NodeService_SubscribeTaskStreamServer) error {
+	if req.TaskId == "" {
+		return status.Error(codes.InvalidArgument, "task_id is required")
+	}
+	if s.streamMgr == nil {
+		return status.Error(codes.Unavailable, "streaming is not configured")
+	}
+
+	ch, cleanup := s.streamMgr.Subscribe(req.TaskId)
+	defer cleanup()
+
+	for {
+		select {
+		case <-stream.Context().Done():
+			return nil
+		case evt, ok := <-ch:
+			if !ok {
+				return nil
+			}
+			if err := stream.Send(evt); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func (s *Server) SendStreamingArtifact(stream pb.NodeService_SendStreamingArtifactServer) error {
+	if s.streamMgr == nil {
+		return status.Error(codes.Unavailable, "streaming is not configured")
+	}
+
+	for {
+		req, err := stream.Recv()
+		if err != nil {
+			if err.Error() == "EOF" {
+				return stream.SendAndClose(&pb.SendStreamingArtifactResponse{})
+			}
+			return err
+		}
+
+		switch evt := req.Event.(type) {
+		case *pb.SendStreamingArtifactRequest_StreamStart:
+			if err := s.streamMgr.HandleStreamStart(evt.StreamStart); err != nil {
+				return status.Errorf(codes.Internal, "stream start: %v", err)
+			}
+		case *pb.SendStreamingArtifactRequest_StreamChunk:
+			if err := s.streamMgr.HandleStreamChunk(evt.StreamChunk); err != nil {
+				return status.Errorf(codes.Internal, "stream chunk: %v", err)
+			}
+		case *pb.SendStreamingArtifactRequest_StreamEnd:
+			if err := s.streamMgr.HandleStreamEnd(evt.StreamEnd); err != nil {
+				return status.Errorf(codes.Internal, "stream end: %v", err)
+			}
+		}
+	}
+}
+
+// ── Discovery (v0.2) ────────────────────────────────────────
+
+func (s *Server) Discover(ctx context.Context, req *pb.DiscoverRequest) (*pb.DiscoverResponse, error) {
+	if req.SkillId == "" {
+		return nil, status.Error(codes.InvalidArgument, "skill_id is required")
+	}
+	if s.anycastRouter == nil {
+		return nil, status.Error(codes.Unavailable, "anycast routing is not configured")
+	}
+
+	endpoints, err := s.anycastRouter.Discover(ctx, req.SkillId)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "discover: %v", err)
+	}
+
+	agents := make([]*pb.DiscoveredAgent, 0, len(endpoints))
+	for _, ep := range endpoints {
+		skills := make([]*pb.SkillInfo, 0, len(ep.Skills))
+		for _, sk := range ep.Skills {
+			skills = append(skills, &pb.SkillInfo{
+				SkillId:     sk.SkillID,
+				Description: sk.Description,
+				Tags:        sk.Tags,
+			})
+		}
+		agents = append(agents, &pb.DiscoveredAgent{
+			PeerId:           ep.PeerID.String(),
+			AgentName:        ep.AgentName,
+			AgentDescription: ep.Description,
+			Skills:           skills,
+		})
+	}
+
+	return &pb.DiscoverResponse{Agents: agents}, nil
+}
+
+// GetLocalCard returns the current local AgentCard protobuf (for bridge/card endpoint).
+func (s *Server) GetLocalCard() *pb.AgentCard {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.card
+}
+
+// HandleInboundTask implements bridge.TaskSender — processes an HTTP-originated task
+// through the local A2A engine and returns the result.
+func (s *Server) HandleInboundTask(task *pb.Task) (*pb.Task, error) {
+	if task == nil || len(task.Messages) == 0 {
+		return nil, fmt.Errorf("invalid inbound task: no messages")
+	}
+
+	// Create an internal task via the A2A engine.
+	msg := task.Messages[0]
+	internalTask, err := s.router.SendTask(context.Background(), s.host.ID(), msg, task.TargetSkillId, "")
+	if err != nil {
+		return nil, fmt.Errorf("create task: %w", err)
+	}
+
+	// Return the task in its initial state. The caller will get updates via
+	// the task status subscription if needed.
+	return &pb.Task{
+		TaskId:        internalTask.ID,
+		ContextId:     internalTask.ContextID,
+		Status:        a2a.TaskStatusToProto(internalTask.Status),
+		TargetSkillId: internalTask.TargetSkillID,
+		Messages:      task.Messages,
+		CreatedAt:     timestamppb.New(internalTask.CreatedAt),
+		UpdatedAt:     timestamppb.New(internalTask.UpdatedAt),
+	}, nil
 }

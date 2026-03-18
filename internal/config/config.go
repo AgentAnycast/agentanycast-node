@@ -40,6 +40,38 @@ type Config struct {
 	// Log settings
 	LogLevel  string `toml:"log_level"`
 	LogFormat string `toml:"log_format"`
+
+	// v0.2: HTTP Bridge settings
+	Bridge BridgeConfig `toml:"bridge"`
+
+	// v0.2: Anycast routing settings
+	Anycast AnycastConfig `toml:"anycast"`
+
+	// v0.2: Metrics settings
+	Metrics MetricsConfig `toml:"metrics"`
+}
+
+// BridgeConfig holds HTTP Bridge configuration.
+type BridgeConfig struct {
+	Enabled     bool     `toml:"enabled"`
+	Listen      string   `toml:"listen"`
+	TLSCert     string   `toml:"tls_cert"`
+	TLSKey      string   `toml:"tls_key"`
+	CORSOrigins []string `toml:"cors_origins"`
+}
+
+// AnycastConfig holds Anycast routing configuration.
+type AnycastConfig struct {
+	RoutingStrategy string `toml:"routing_strategy"`
+	CacheTTL        string `toml:"cache_ttl"`
+	AutoRegister    bool   `toml:"auto_register"`
+	RegistryAddr    string `toml:"registry_addr"`
+}
+
+// MetricsConfig holds Prometheus metrics configuration.
+type MetricsConfig struct {
+	Enabled bool   `toml:"enabled"`
+	Listen  string `toml:"listen"`
 }
 
 // DefaultConfig returns the default daemon configuration.
@@ -62,6 +94,20 @@ func DefaultConfig() *Config {
 		OfflineQueueTTL:    "24h",
 		LogLevel:           "info",
 		LogFormat:          "json",
+		Bridge: BridgeConfig{
+			Enabled:     false,
+			Listen:      ":8080",
+			CORSOrigins: []string{"*"},
+		},
+		Anycast: AnycastConfig{
+			RoutingStrategy: "random",
+			CacheTTL:        "30s",
+			AutoRegister:    true,
+		},
+		Metrics: MetricsConfig{
+			Enabled: false,
+			Listen:  ":9090",
+		},
 	}
 }
 

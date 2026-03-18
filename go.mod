@@ -8,6 +8,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/libp2p/go-libp2p v0.47.0
 	github.com/multiformats/go-multiaddr v0.16.1
+	github.com/prometheus/client_golang v1.22.0
 	go.etcd.io/bbolt v1.4.3
 	google.golang.org/grpc v1.79.2
 	google.golang.org/protobuf v1.36.11
@@ -74,7 +75,6 @@ require (
 	github.com/pion/transport/v3 v3.0.7 // indirect
 	github.com/pion/turn/v4 v4.0.2 // indirect
 	github.com/pion/webrtc/v4 v4.1.2 // indirect
-	github.com/prometheus/client_golang v1.22.0 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.64.0 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
