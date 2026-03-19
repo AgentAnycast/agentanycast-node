@@ -49,8 +49,13 @@ func (c *Client) FetchDescription(ctx context.Context, baseURL string) (*AgentDe
 		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
 	}
 
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1 MiB limit
+	if err != nil {
+		return nil, fmt.Errorf("read agent description: %w", err)
+	}
+
 	var desc AgentDescription
-	if err := json.NewDecoder(resp.Body).Decode(&desc); err != nil {
+	if err := json.Unmarshal(body, &desc); err != nil {
 		return nil, fmt.Errorf("decode agent description: %w", err)
 	}
 
@@ -77,8 +82,13 @@ func (c *Client) FetchInterface(ctx context.Context, baseURL string) (*OpenRPCSp
 		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
 	}
 
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1 MiB limit
+	if err != nil {
+		return nil, fmt.Errorf("read OpenRPC spec: %w", err)
+	}
+
 	var spec OpenRPCSpec
-	if err := json.NewDecoder(resp.Body).Decode(&spec); err != nil {
+	if err := json.Unmarshal(body, &spec); err != nil {
 		return nil, fmt.Errorf("decode OpenRPC spec: %w", err)
 	}
 

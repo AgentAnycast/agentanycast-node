@@ -101,6 +101,16 @@ func IssueSkillCredential(privKey libp2pcrypto.PrivKey, issuerDID, subjectDID st
 //
 // It extracts the issuer's public key from the issuer DID (supports did:key),
 // reconstructs the canonical credential payload, and checks the signature.
+//
+// Known limitations:
+//   - No expiration checking: credentials without an expirationDate are accepted
+//     indefinitely, and any expirationDate field present in the credential is not validated.
+//   - No revocation support: there is no credential status or revocation list check.
+//   - Only did:key issuers: verification requires the issuer DID to use the did:key method;
+//     did:web and other methods are not supported for signature verification.
+//   - Canonical JSON caveat: the canonicalization uses sorted-key JSON marshaling,
+//     which may not be fully compatible with other VC implementations that use
+//     JSON-LD canonicalization (e.g., URDNA2015).
 func VerifyCredential(vc *VerifiableCredential) error {
 	if vc.Proof == nil {
 		return ErrVCInvalidProof

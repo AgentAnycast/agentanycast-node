@@ -15,9 +15,15 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/mr-tron/base58"
 )
+
+// didWebHTTPClient is a shared HTTP client with a reasonable timeout for DID Web resolution.
+var didWebHTTPClient = &http.Client{
+	Timeout: 10 * time.Second,
+}
 
 // Errors for did:web operations.
 var (
@@ -98,7 +104,7 @@ func GenerateDIDWeb(domain string, path ...string) string {
 	encoded := url.PathEscape(domain)
 	// url.PathEscape encodes ':' as %3A but also encodes other chars we want to keep.
 	// We only need to handle the colon for port numbers specifically.
-	encoded = strings.ReplaceAll(domain, ":", "%3A")
+	encoded = strings.ReplaceAll(encoded, ":", "%3A")
 
 	if len(path) == 0 {
 		return "did:web:" + encoded
@@ -155,7 +161,7 @@ func resolveDIDWebFromURL(ctx context.Context, didWeb, resolveURL string) (*DIDD
 	}
 	req.Header.Set("Accept", "application/did+ld+json, application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := didWebHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("%w: HTTP GET %s: %v", ErrDIDWebResolve, resolveURL, err)
 	}
@@ -200,8 +206,8 @@ func ExtractEd25519Key(doc *DIDDocument) ([]byte, error) {
 		}
 
 		// Verify and strip the Ed25519 multicodec prefix (0xed 0x01).
-		if len(decoded) < len(ed25519MulticodecPrefix)+32 {
-			return nil, fmt.Errorf("%w: decoded key too short", ErrInvalidMultibase)
+		if len(decoded) != len(ed25519MulticodecPrefix)+32 {
+			return nil, fmt.Errorf("%w: decoded key has wrong length (got %d, want %d)", ErrInvalidMultibase, len(decoded), len(ed25519MulticodecPrefix)+32)
 		}
 		for i, b := range ed25519MulticodecPrefix {
 			if decoded[i] != b {

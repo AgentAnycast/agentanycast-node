@@ -1,10 +1,13 @@
 package anp
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
+	"sync"
+	"time"
 
 	pb "github.com/agentanycast/agentanycast-proto/gen/go/agentanycast/v1"
 )
@@ -21,6 +24,7 @@ type IncomingANPTask struct {
 //   - GET  /agent/interface.json  — OpenRPC interface specification
 //   - POST /agent/rpc             — JSON-RPC 2.0 method calls
 type Handler struct {
+	mu       sync.RWMutex
 	card     *pb.AgentCard
 	taskChan chan<- IncomingANPTask
 	logger   *slog.Logger
@@ -35,10 +39,19 @@ func NewHandler(card *pb.AgentCard, taskChan chan<- IncomingANPTask, logger *slo
 	}
 }
 
-// SetCard updates the agent card used by the handler. Safe to call while
-// the server is running (the card is read per-request, not cached).
+// SetCard updates the agent card used by the handler. Safe to call
+// concurrently while the server is running.
 func (h *Handler) SetCard(card *pb.AgentCard) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.card = card
+}
+
+// getCard returns the current agent card under a read lock.
+func (h *Handler) getCard() *pb.AgentCard {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.card
 }
 
 // ServeHTTP routes requests to the appropriate ANP endpoint.
@@ -61,7 +74,8 @@ func (h *Handler) serveDescription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.card == nil {
+	card := h.getCard()
+	if card == nil {
 		http.Error(w, "no agent card configured", http.StatusNotFound)
 		return
 	}
@@ -73,7 +87,7 @@ func (h *Handler) serveDescription(w http.ResponseWriter, r *http.Request) {
 	}
 	baseURL := scheme + "://" + r.Host
 
-	desc := AgentCardToDescription(h.card, baseURL)
+	desc := AgentCardToDescription(card, baseURL)
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(desc); err != nil {
@@ -87,12 +101,13 @@ func (h *Handler) serveInterface(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.card == nil {
+	card := h.getCard()
+	if card == nil {
 		http.Error(w, "no agent card configured", http.StatusNotFound)
 		return
 	}
 
-	spec := SkillsToOpenRPC(h.card.Skills, h.card.Name, h.card.Version)
+	spec := SkillsToOpenRPC(card.Skills, card.Name, card.Version)
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(spec); err != nil {
@@ -123,16 +138,30 @@ func (h *Handler) serveRPC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Route the RPC call through the task channel.
+	// Route the RPC call through the task channel with a timeout to prevent blocking.
 	resultCh := make(chan *JSONRPCResponse, 1)
-	h.taskChan <- IncomingANPTask{
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	select {
+	case h.taskChan <- IncomingANPTask{
 		Method:   req.Method,
 		Params:   req.Params,
 		ResultCh: resultCh,
+	}:
+	case <-ctx.Done():
+		h.writeError(w, req.ID, -32000, "server busy: task queue full")
+		return
 	}
 
 	// Wait for the result.
-	result := <-resultCh
+	var result *JSONRPCResponse
+	select {
+	case result = <-resultCh:
+	case <-ctx.Done():
+		h.writeError(w, req.ID, -32000, "request timed out waiting for result")
+		return
+	}
 
 	respBytes, err := json.Marshal(result)
 	if err != nil {
