@@ -2,7 +2,7 @@
 
 P2P daemon for decentralized A2A agent-to-agent communication.
 
-[![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License](https://img.shields.io/badge/License-FSL--1.1--ALv2-blue)](LICENSE)
 
 > **AgentAnycast is fully decentralized.** On a local network, it works with zero configuration via mDNS auto-discovery. For cross-network communication, just deploy your own relay with a single command.
@@ -12,13 +12,15 @@ P2P daemon for decentralized A2A agent-to-agent communication.
 AgentAnycast Node (`agentanycastd`) is the core daemon that powers the AgentAnycast network. It runs on each machine and handles:
 
 - **Automatic peer discovery** via mDNS on local networks
-- **NAT traversal** via circuit relay and hole punching for cross-network communication
+- **NAT traversal** via circuit relay, hole punching, and QUIC
 - **End-to-end encryption** using Noise_XX (Curve25519 + ChaCha20-Poly1305)
-- **A2A task routing** between peers with direct, skill-based, and HTTP bridge addressing
+- **A2A task routing** with direct, skill-based, and HTTP bridge addressing
 - **Streaming** for chunked artifact delivery
 - **HTTP Bridge** for P2P ↔ HTTP A2A interop
+- **MCP Server** for AI tool integration (Claude, Cursor, ChatGPT, etc.)
+- **ANP Bridge** for Agent Network Protocol interop
 - **Prometheus metrics** for observability
-- **gRPC API** for language SDKs (Python, etc.) to interact with the daemon
+- **gRPC API** for language SDKs (Python, TypeScript) to interact with the daemon
 
 ## Quick Start
 
@@ -32,44 +34,59 @@ go build -o agentanycastd ./cmd/agentanycastd
 ./agentanycastd
 ```
 
-That's it. Agents on the same network find each other via mDNS. No relay, no bootstrap, no configuration needed.
-
 ### Cross-network -- deploy your own relay
 
-For agents on different networks (across the internet), you need a relay server. Deploy one with a single command:
-
 ```bash
-# On any VPS with a public IP (Oracle Cloud free tier works great)
+# On any VPS with a public IP
 git clone https://github.com/AgentAnycast/agentanycast-relay && cd agentanycast-relay
 docker-compose up -d
 
-# Note the RELAY_ADDR from the logs, then tell your nodes about it:
+# Note the RELAY_ADDR from the logs, then:
 ./agentanycastd -bootstrap-peers "/ip4/<RELAY_IP>/tcp/4001/p2p/12D3KooW..."
 ```
 
-Or via environment variable:
+### MCP mode -- use as an AI tool
 
 ```bash
-export AGENTANYCAST_BOOTSTRAP_PEERS="/ip4/<RELAY_IP>/tcp/4001/p2p/12D3KooW..."
-./agentanycastd
+# stdio mode (Claude Desktop, Cursor, VS Code, Gemini CLI)
+./agentanycastd -mcp
+
+# Streamable HTTP mode (ChatGPT, remote clients)
+./agentanycastd -mcp-listen :3000
 ```
 
 ## Configuration
 
-The daemon can be configured via CLI flags, environment variables, or a TOML config file.
-
 **Priority:** CLI flags > environment variables > config file > defaults
+
+### CLI Flags
+
+| Flag | Description |
+|---|---|
+| `-key` | Path to identity key file |
+| `-grpc-listen` | gRPC listen address (unix:// or tcp://) |
+| `-log-level` | Log level (`debug`, `info`, `warn`, `error`) |
+| `-bootstrap-peers` | Comma-separated bootstrap multiaddrs |
+| `-bridge-listen` | HTTP bridge listen address (e.g., `:8080`) |
+| `-enable-webtransport` | Enable WebTransport (QUIC-based, browser-compatible) |
+| `-mcp` | Run as MCP server over stdio |
+| `-mcp-listen` | MCP Streamable HTTP listen address (e.g., `:3000`) |
+| `-anp-listen` | ANP bridge listen address (e.g., `:8090`) |
+| `-config` | Path to TOML config file |
+| `-version` | Print version and exit |
 
 ### Environment Variables
 
 | Variable | Description | Default |
 |---|---|---|
 | `AGENTANYCAST_KEY_PATH` | Path to the libp2p identity key file | `~/.agentanycast/key` |
-| `AGENTANYCAST_GRPC_LISTEN` | gRPC server listen address | `127.0.0.1:50051` |
-| `AGENTANYCAST_LOG_LEVEL` | Log level (`debug`, `info`, `warn`, `error`) | `info` |
-| `AGENTANYCAST_STORE_PATH` | Path to persistent data store | `~/.agentanycast/store` |
-| `AGENTANYCAST_BOOTSTRAP_PEERS` | Comma-separated list of relay/bootstrap multiaddrs | (none -- LAN only) |
+| `AGENTANYCAST_GRPC_LISTEN` | gRPC server listen address | `unix://~/.agentanycast/daemon.sock` |
+| `AGENTANYCAST_LOG_LEVEL` | Log level | `info` |
+| `AGENTANYCAST_STORE_PATH` | Path to persistent data store | `~/.agentanycast/data` |
+| `AGENTANYCAST_BOOTSTRAP_PEERS` | Comma-separated relay/bootstrap multiaddrs | (none) |
 | `AGENTANYCAST_ENABLE_MDNS` | Enable mDNS local network discovery | `true` |
+| `AGENTANYCAST_REGISTRY_ADDRS` | Comma-separated registry addresses (multi-relay federation) | (none) |
+| `AGENTANYCAST_MCP_LISTEN` | MCP Streamable HTTP address | (none) |
 
 ### Config File
 
@@ -77,71 +94,77 @@ Default location: `~/.agentanycast/config.toml`
 
 ```toml
 key_path = "~/.agentanycast/key"
-grpc_listen = "127.0.0.1:50051"
+grpc_listen = "unix://~/.agentanycast/daemon.sock"
 log_level = "info"
-log_format = "json"             # "json" or "text"
-store_path = "~/.agentanycast/store"
+log_format = "json"
+store_path = "~/.agentanycast/data"
 enable_mdns = true
-bootstrap_peers = [
-    "/ip4/203.0.113.50/tcp/4001/p2p/12D3KooW..."
-]
+enable_quic = true
+enable_webtransport = false
+enable_relay_client = true
+enable_hole_punching = true
+offline_queue_ttl = "24h"
+bootstrap_peers = ["/ip4/203.0.113.50/tcp/4001/p2p/12D3KooW..."]
 
 [bridge]
 enabled = false
 listen = ":8080"
 # tls_cert = "/path/to/cert.pem"
 # tls_key = "/path/to/key.pem"
-# cors_origins = ["https://app.example.com"]
+# cors_origins = ["*"]
 
 [anycast]
-# registry_addr = "relay.example.com:50052"
-enable_dht = false
-dht_mode = "auto"               # "auto", "server", or "client"
+routing_strategy = "random"
 cache_ttl = "30s"
 auto_register = true
+# registry_addr = "relay.example.com:50052"
+# registry_addrs = ["relay1:50052", "relay2:50052"]  # federation
+enable_dht = false
+dht_mode = "auto"   # "auto", "server", or "client"
 
 [metrics]
 enabled = false
 listen = ":9090"
+
+[mcp]
+enabled = false
+listen = ":3000"
+
+[anp]
+enabled = false
+listen = ":8090"
+
+[identity]
+# did_web = "did:web:example.com:agents:myagent"
+# did_dns_domain = "example.com"
 ```
-
-### CLI Flags
-
-| Flag | Description |
-|---|---|
-| `-key` | Path to identity key file |
-| `-grpc-listen` | gRPC listen address |
-| `-log-level` | Log level |
-| `-bootstrap-peers` | Comma-separated bootstrap multiaddrs |
-| `-bridge-listen` | HTTP bridge listen address (e.g., `:8080`) |
-| `-config` | Path to TOML config file |
-| `-version` | Print version and exit |
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                      agentanycastd                       │
-│                                                          │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐ ┌──────────┐  │
-│  │  Engine   │  │  Router  │  │ Offline  │ │ Anycast  │  │
-│  │(task FSM) │  │(A2A msg) │  │  Queue   │ │ Router   │  │
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘ └────┬─────┘  │
-│       │              │             │             │        │
-│  ┌────┴──────────────┴─────────────┴─────────────┴─────┐ │
-│  │                    libp2p Host                      │ │
-│  │  mDNS · Noise · TCP/QUIC · Relay · DCUtR · DHT     │ │
-│  └──────────────────────┬──────────────────────────────┘ │
-│                         │                                │
-│  ┌──────────────────────┴──────────────────────────────┐ │
-│  │      gRPC Server (16 RPCs for SDK)                  │ │
-│  └─────────────────────────────────────────────────────┘ │
-│                                                          │
-│  ┌───────────────┐  ┌───────────────┐  ┌──────────────┐  │
-│  │  HTTP Bridge  │  │   Metrics     │  │  BoltDB      │  │
-│  │  (A2A ↔ P2P)  │  │  (Prometheus) │  │  (storage)   │  │
-│  └───────────────┘  └───────────────┘  └──────────────┘  │
-└──────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                         agentanycastd                            │
+│                                                                  │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────────┐ │
+│  │  Engine   │  │  Router  │  │ Offline  │  │ Anycast Router   │ │
+│  │(task FSM) │  │(A2A msg) │  │  Queue   │  │(skill discovery) │ │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────────────┘ │
+│       │              │             │              │               │
+│  ┌────┴──────────────┴─────────────┴──────────────┴─────────┐    │
+│  │                       libp2p Host                        │    │
+│  │    mDNS · Noise · TCP · QUIC · WebTransport · DHT        │    │
+│  │    Circuit Relay v2 · DCUtR Hole Punching                │    │
+│  └──────────────────────┬───────────────────────────────────┘    │
+│                         │                                        │
+│  ┌──────────────────────┴──────────────────────────────────────┐ │
+│  │                gRPC Server (16 RPCs for SDKs)               │ │
+│  └─────────────────────────────────────────────────────────────┘ │
+│                                                                  │
+│  ┌────────────┐ ┌────────────┐ ┌──────────┐ ┌────────┐ ┌──────┐ │
+│  │ HTTP Bridge│ │ MCP Server │ │ANP Bridge│ │Metrics │ │BoltDB│ │
+│  │ (A2A↔P2P) │ │(stdio/HTTP)│ │(ANP↔A2A) │ │(Prom.) │ │(stor)│ │
+│  └────────────┘ └────────────┘ └──────────┘ └────────┘ └──────┘ │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 ### Internal Packages
@@ -149,14 +172,16 @@ listen = ":9090"
 | Package | Responsibility |
 |---|---|
 | `internal/a2a/` | A2A protocol engine — task state machine, envelope routing, offline queue, streaming |
-| `internal/node/` | libp2p host — peer connections, mDNS discovery, DHT, stream multiplexing |
-| `internal/crypto/` | Ed25519 key management, Noise_XX integration |
+| `internal/node/` | libp2p host — peer connections, mDNS, DHT, TCP/QUIC/WebTransport |
+| `internal/crypto/` | Ed25519 key management, DID conversion (did:key, did:web, did:dns), Verifiable Credentials |
 | `internal/nat/` | AutoNAT detection, DCUtR hole punching, Circuit Relay v2 client |
 | `internal/store/` | BoltDB persistence — tasks, agent cards, offline message queue |
 | `internal/config/` | Configuration — TOML file, environment variables, CLI flags |
 | `internal/bridge/` | HTTP Bridge — translates HTTP JSON-RPC ↔ P2P A2A envelopes |
-| `internal/anycast/` | Anycast router — skill-based addressing, registry + DHT discovery |
-| `internal/metrics/` | Prometheus metrics — connections, tasks, routing, bridge, streaming |
+| `internal/anycast/` | Anycast router — skill-based addressing, registry + multi-registry federation + DHT discovery |
+| `internal/metrics/` | Prometheus metrics — connections, tasks, routing, bridge, streaming, MCP |
+| `internal/mcp/` | MCP Server — exposes P2P capabilities as MCP tools (stdio + Streamable HTTP) |
+| `internal/anp/` | ANP Bridge — translates ANP HTTP ↔ A2A P2P (JSON-RPC 2.0 + JSON-LD) |
 | `pkg/grpcserver/` | gRPC server — 16 RPC methods for SDKs |
 
 ### gRPC API (16 RPCs)
@@ -170,25 +195,55 @@ listen = ":9090"
 | **Streaming** | `SubscribeTaskStream`, `SendStreamingArtifact` |
 | **Discovery** | `Discover` |
 
+### MCP Server
+
+The daemon can run as an MCP (Model Context Protocol) server, exposing P2P capabilities as tools for AI assistants:
+
+| Tool | Description |
+|---|---|
+| `toolGetNodeInfo` | Get local node information |
+| `toolListConnectedPeers` | List connected peers |
+| `toolGetAgentCard` | Get local or remote agent card |
+| `toolDiscoverAgents` | Discover agents by skill |
+| `toolSendTask` | Send task to peer by ID |
+| `toolSendTaskBySkill` | Send task by skill (anycast) |
+| `toolGetTaskStatus` | Get task status |
+
+Two transport modes:
+- **stdio** — for local AI tool integration (Claude Desktop, Cursor, VS Code, Gemini CLI, JetBrains)
+- **Streamable HTTP** — for remote clients (ChatGPT)
+
 ### HTTP Bridge
 
-The HTTP Bridge exposes an A2A-compatible HTTP endpoint, letting standard HTTP A2A agents interact with the P2P network:
+Exposes an A2A-compatible HTTP endpoint for P2P ↔ HTTP interop:
 
-- `/.well-known/a2a-agent-card` — Agent Card discovery
-- `/` — JSON-RPC endpoint for task operations
+- `GET /.well-known/a2a-agent-card` — Agent Card discovery
+- `POST /` — JSON-RPC endpoint for task operations
 - Optional TLS and CORS support
+
+### ANP Bridge
+
+Exposes an ANP-compatible HTTP endpoint for Agent Network Protocol interop:
+
+- `GET /agent/ad.json` — Agent Description (JSON-LD)
+- `GET /agent/interface.json` — OpenRPC specification
+- `POST /agent/rpc` — JSON-RPC 2.0 endpoint
 
 ### Metrics
 
-When enabled, the daemon exposes Prometheus metrics on a configurable HTTP port:
+Prometheus metrics on configurable HTTP port (default `:9090`):
 
-- `agentanycast_connected_peers` — current peer count
-- `agentanycast_tasks_total` — tasks by status
+- `agentanycast_connected_peers` — current peer count (gauge)
+- `agentanycast_connections_total` — connection events by direction (counter)
+- `agentanycast_connections_by_transport` — connections by transport type: tcp/quic/webtransport (counter)
+- `agentanycast_tasks_total` — tasks by direction and status (counter)
 - `agentanycast_task_duration_seconds` — task latency histogram
-- `agentanycast_bridge_requests_total` — HTTP bridge requests
-- `agentanycast_route_resolutions_total` — anycast resolution count
-- `agentanycast_stream_chunks_total` — streaming chunk count
-- `agentanycast_offline_queue_size` — queued offline messages
+- `agentanycast_route_resolutions_total` — anycast resolution by result (counter)
+- `agentanycast_bridge_requests_total` — HTTP bridge requests (counter)
+- `agentanycast_stream_chunks_total` — streaming chunks by direction (counter)
+- `agentanycast_messages_total` — A2A messages by envelope type (counter)
+- `agentanycast_offline_queue_size` — queued offline messages (gauge)
+- `agentanycast_mcp_tool_calls_total` — MCP tool calls by tool and status (counter)
 
 ## Disclaimer
 
