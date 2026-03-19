@@ -1,3 +1,6 @@
+# MCP Registry publisher tokens (local credentials, never commit)
+.mcpregistry_*
+
 # Binaries (root only, so cmd/agentanycastd/ source dir is not ignored)
 /agentanycastd
 /agentbraind
