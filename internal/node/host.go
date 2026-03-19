@@ -19,7 +19,9 @@ import (
 	"github.com/libp2p/go-libp2p/p2p/muxer/yamux"
 	libp2pquic "github.com/libp2p/go-libp2p/p2p/transport/quic"
 	"github.com/libp2p/go-libp2p/p2p/transport/tcp"
+	libp2pwebtransport "github.com/libp2p/go-libp2p/p2p/transport/webtransport"
 
+	"github.com/agentanycast/agentanycast-node/internal/metrics"
 	"github.com/multiformats/go-multiaddr"
 )
 
@@ -28,6 +30,8 @@ type HostConfig struct {
 	PrivateKey         libp2pcrypto.PrivKey
 	ListenAddrs        []string
 	BootstrapPeers     []string
+	EnableQUIC         bool
+	EnableWebTransport bool
 	EnableRelayClient  bool
 	EnableHolePunching bool
 	EnableMDNS         bool
@@ -76,9 +80,27 @@ func NewHost(ctx context.Context, cfg HostConfig, logger *slog.Logger) (*Host, e
 		libp2p.Security(noise.ID, noise.New),
 		libp2p.Muxer(yamux.ID, yamux.DefaultTransport),
 		libp2p.Transport(tcp.NewTCPTransport),
-		libp2p.Transport(libp2pquic.NewTransport),
 		libp2p.NATPortMap(),
 		libp2p.EnableAutoNATv2(),
+	}
+
+	if cfg.EnableQUIC {
+		opts = append(opts, libp2p.Transport(libp2pquic.NewTransport))
+		logger.Info("QUIC transport enabled")
+	}
+
+	if cfg.EnableWebTransport {
+		opts = append(opts, libp2p.Transport(libp2pwebtransport.New))
+		// Add WebTransport listener address.
+		wtMA, err := multiaddr.NewMultiaddr("/ip4/0.0.0.0/udp/0/quic-v1/webtransport")
+		if err == nil {
+			listenAddrs = append(listenAddrs, wtMA)
+			// Override the listen addrs option to include the WebTransport address.
+			opts[1] = libp2p.ListenAddrs(listenAddrs...)
+		} else {
+			logger.Warn("failed to parse WebTransport listen address", "error", err)
+		}
+		logger.Info("WebTransport enabled")
 	}
 
 	if cfg.EnableRelayClient {
@@ -122,10 +144,13 @@ func NewHost(ctx context.Context, cfg HostConfig, logger *slog.Logger) (*Host, e
 	h.Network().Notify(&network.NotifyBundle{
 		ConnectedF: func(n network.Network, c network.Conn) {
 			remotePeer := c.RemotePeer()
+			transport := metrics.ClassifyTransport(c.RemoteMultiaddr())
 			bh.logger.Info("peer connected",
 				"peer", remotePeer.String(),
 				"addr", c.RemoteMultiaddr().String(),
+				"transport", transport,
 			)
+			metrics.ConnectionsByTransport.WithLabelValues(transport).Inc()
 			if bh.OnPeerConnected != nil {
 				go bh.OnPeerConnected(remotePeer)
 			}

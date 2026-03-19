@@ -19,6 +19,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 
 	"github.com/agentanycast/agentanycast-node/internal/a2a"
+	"github.com/agentanycast/agentanycast-node/internal/anp"
 	"github.com/agentanycast/agentanycast-node/internal/anycast"
 	"github.com/agentanycast/agentanycast-node/internal/bridge"
 	"github.com/agentanycast/agentanycast-node/internal/config"
@@ -40,9 +41,11 @@ func main() {
 		flagLogLevel       = flag.String("log-level", "", "log level (debug/info/warn/error)")
 		flagBootstrapPeers = flag.String("bootstrap-peers", "", "comma-separated bootstrap peer multiaddrs")
 		flagBridgeListen   = flag.String("bridge-listen", "", "HTTP Bridge listen address (e.g., :8080)")
-		flagMCP            = flag.Bool("mcp", false, "run as MCP server over stdio (for Claude Desktop, Cursor, etc.)")
-		flagMCPListen      = flag.String("mcp-listen", "", "MCP Streamable HTTP listen address (e.g., :3000)")
-		flagVersion        = flag.Bool("version", false, "print version and exit")
+		flagEnableWebTransport = flag.Bool("enable-webtransport", false, "enable WebTransport (QUIC-based, browser-compatible)")
+		flagANPListen          = flag.String("anp-listen", "", "ANP bridge listen address (e.g., :8090)")
+		flagMCP                = flag.Bool("mcp", false, "run as MCP server over stdio (for Claude Desktop, Cursor, etc.)")
+		flagMCPListen          = flag.String("mcp-listen", "", "MCP Streamable HTTP listen address (e.g., :3000)")
+		flagVersion            = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
 
@@ -83,6 +86,13 @@ func main() {
 	if *flagBridgeListen != "" {
 		cfg.Bridge.Enabled = true
 		cfg.Bridge.Listen = *flagBridgeListen
+	}
+	if *flagEnableWebTransport {
+		cfg.EnableWebTransport = true
+	}
+	if *flagANPListen != "" {
+		cfg.ANP.Enabled = true
+		cfg.ANP.Listen = *flagANPListen
 	}
 
 	// ── Logger ───────────────────────────────────────────────
@@ -128,6 +138,8 @@ func main() {
 		PrivateKey:         privKey,
 		ListenAddrs:        cfg.ListenAddrs,
 		BootstrapPeers:     cfg.BootstrapPeers,
+		EnableQUIC:         cfg.EnableQUIC,
+		EnableWebTransport: cfg.EnableWebTransport,
 		EnableRelayClient:  cfg.EnableRelayClient,
 		EnableHolePunching: cfg.EnableHolePunching,
 		EnableMDNS:         cfg.EnableMDNS,
@@ -188,14 +200,24 @@ func main() {
 	{
 		var providers []anycast.DiscoveryProvider
 
-		// v0.2: Relay registry discovery.
-		if cfg.Anycast.RegistryAddr != "" {
-			regDiscovery, err := anycast.NewRegistryDiscovery(cfg.Anycast.RegistryAddr, logger)
+		// v0.5: Multi-relay registry discovery (federation-aware).
+		registryAddrs := cfg.Anycast.EffectiveRegistryAddrs()
+		if len(registryAddrs) > 1 {
+			multiDiscovery, err := anycast.NewMultiRegistryDiscovery(registryAddrs, logger)
+			if err != nil {
+				logger.Warn("failed to create multi-registry discovery", "error", err)
+			} else {
+				providers = append(providers, multiDiscovery)
+				logger.Info("multi-registry discovery enabled", "addrs", registryAddrs)
+			}
+		} else if len(registryAddrs) == 1 {
+			// v0.2: Single relay registry discovery (backward compat).
+			regDiscovery, err := anycast.NewRegistryDiscovery(registryAddrs[0], logger)
 			if err != nil {
 				logger.Warn("failed to connect to registry", "error", err)
 			} else {
 				providers = append(providers, regDiscovery)
-				logger.Info("registry discovery enabled", "addr", cfg.Anycast.RegistryAddr)
+				logger.Info("registry discovery enabled", "addr", registryAddrs[0])
 			}
 		}
 
@@ -295,6 +317,36 @@ func main() {
 		logger.Info("HTTP bridge enabled", "addr", cfg.Bridge.Listen)
 	}
 
+	// ── v0.5: ANP Bridge Server (optional) ──────────────────
+	if cfg.ANP.Enabled {
+		anpTaskChan := make(chan anp.IncomingANPTask, 64)
+		anpSrv := anp.NewServer(cfg.ANP.Listen, grpcSrv.GetLocalCard(), anpTaskChan, logger)
+
+		go func() {
+			if err := anpSrv.Start(); err != nil {
+				logger.Error("ANP bridge server error", "error", err)
+			}
+		}()
+		defer anpSrv.Stop(context.Background())
+
+		// Process incoming ANP tasks — route through the A2A engine.
+		go func() {
+			for task := range anpTaskChan {
+				go func(t anp.IncomingANPTask) {
+					rpcReq := anp.TaskToJSONRPCRequest(t.Method, "", "")
+					_ = rpcReq // ANP task processing wired to A2A engine in future iterations.
+					t.ResultCh <- &anp.JSONRPCResponse{
+						JSONRPC: "2.0",
+						Error:   &anp.JSONRPCError{Code: -32601, Message: "method not implemented via ANP bridge yet"},
+						ID:      t.Method,
+					}
+				}(task)
+			}
+		}()
+
+		logger.Info("ANP bridge enabled", "addr", cfg.ANP.Listen)
+	}
+
 	// ── v0.2: Metrics Server (optional) ─────────────────────
 	if cfg.Metrics.Enabled {
 		metricsSrv := metrics.NewServer(cfg.Metrics.Listen, logger)
@@ -326,6 +378,7 @@ func main() {
 		"addresses", h.Addrs(),
 		"grpc_listen", cfg.GRPCListen,
 		"bridge_enabled", cfg.Bridge.Enabled,
+		"anp_enabled", cfg.ANP.Enabled,
 		"mcp_stdio", *flagMCP,
 		"metrics_enabled", cfg.Metrics.Enabled,
 	)

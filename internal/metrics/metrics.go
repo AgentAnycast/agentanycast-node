@@ -5,8 +5,10 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/multiformats/go-multiaddr"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -75,6 +77,13 @@ var (
 		Help:      "Number of messages in the offline queue.",
 	})
 
+	// Transport metrics
+	ConnectionsByTransport = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "agentanycast",
+		Name:      "connections_by_transport",
+		Help:      "Total number of connections established by transport type.",
+	}, []string{"transport"}) // "tcp", "quic", "webtransport"
+
 	// MCP metrics
 	MCPToolCalls = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "agentanycast",
@@ -114,4 +123,23 @@ func (s *Server) ListenAndServe() error {
 // Shutdown gracefully stops the server.
 func (s *Server) Shutdown(ctx context.Context) error {
 	return s.httpServer.Shutdown(ctx)
+}
+
+// ClassifyTransport returns a transport label ("tcp", "quic", or "webtransport")
+// based on the remote multiaddr of a connection.
+func ClassifyTransport(addr multiaddr.Multiaddr) string {
+	if addr == nil {
+		return "unknown"
+	}
+	str := addr.String()
+	if strings.Contains(str, "/webtransport") {
+		return "webtransport"
+	}
+	if strings.Contains(str, "/quic-v1") || strings.Contains(str, "/quic") {
+		return "quic"
+	}
+	if strings.Contains(str, "/tcp/") {
+		return "tcp"
+	}
+	return "unknown"
 }
