@@ -27,7 +27,7 @@ jobs:
 
       - name: Generate Go code from proto
         working-directory: agentanycast-proto
-        run: buf generate
+        run: buf generate --template buf.gen.go.yaml
 
       - uses: actions/setup-go@v5
         with:
@@ -60,7 +60,7 @@ jobs:
 
       - name: Generate Go code from proto
         working-directory: agentanycast-proto
-        run: buf generate
+        run: buf generate --template buf.gen.go.yaml
 
       - uses: actions/setup-go@v5
         with:
@@ -95,7 +95,7 @@ jobs:
 
       - name: Generate Go code from proto
         working-directory: agentanycast-proto
-        run: buf generate
+        run: buf generate --template buf.gen.go.yaml
 
       - uses: actions/setup-go@v5
         with:
@@ -128,7 +128,7 @@ jobs:
 
       - name: Generate Go code from proto
         working-directory: agentanycast-proto
-        run: buf generate
+        run: buf generate --template buf.gen.go.yaml
 
       - uses: actions/setup-go@v5
         with:
