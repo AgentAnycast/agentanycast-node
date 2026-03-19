@@ -327,7 +327,10 @@ func main() {
 				logger.Error("ANP bridge server error", "error", err)
 			}
 		}()
-		defer anpSrv.Stop(context.Background())
+		defer func() {
+			anpSrv.Stop(context.Background())
+			close(anpTaskChan) // Unblock the task consumer goroutine.
+		}()
 
 		// Process incoming ANP tasks — route through the A2A engine.
 		go func() {
