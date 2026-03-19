@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Pre-push hook: runs the same checks as CI before allowing push.
+# Install: git config core.hooksPath .githooks
+set -euo pipefail
+
+# Ensure common tool paths are available
+export PATH="/opt/homebrew/bin:/opt/homebrew/Cellar/go/1.24.3/bin:/usr/local/bin:/usr/local/go/bin:$HOME/go/bin:$PATH" 2>/dev/null || true
+
+echo "🔍 Running pre-push checks (mirroring CI)..."
+echo ""
+
+FAILED=0
+
+# 1. Go vet
+echo "▶ [1/3] go vet..."
+if go vet ./... ; then
+  echo "✅ go vet passed"
+else
+  echo "❌ go vet failed"
+  FAILED=1
+fi
+echo ""
+
+# 2. golangci-lint (if installed)
+echo "▶ [2/3] golangci-lint..."
+if command -v golangci-lint &>/dev/null; then
+  if golangci-lint run ; then
+    echo "✅ golangci-lint passed"
+  else
+    echo "❌ golangci-lint failed"
+    FAILED=1
+  fi
+else
+  echo "⚠️  golangci-lint not installed, skipping (CI will still check)"
+fi
+echo ""
+
+# 3. Unit tests
+echo "▶ [3/3] Unit tests..."
+if go test -short -race -count=1 ./... ; then
+  echo "✅ Tests passed"
+else
+  echo "❌ Tests failed"
+  FAILED=1
+fi
+echo ""
+
+if [ $FAILED -ne 0 ]; then
+  echo "❌ Pre-push checks FAILED. Push aborted."
+  echo "   Fix the issues above and try again."
+  echo "   To skip (emergency): git push --no-verify"
+  exit 1
+fi
+
+echo "✅ All pre-push checks passed."

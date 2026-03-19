@@ -49,6 +49,9 @@ type Config struct {
 
 	// v0.2: Metrics settings
 	Metrics MetricsConfig `toml:"metrics"`
+
+	// v0.4: MCP server settings
+	MCP MCPConfig `toml:"mcp"`
 }
 
 // BridgeConfig holds HTTP Bridge configuration.
@@ -75,6 +78,12 @@ type AnycastConfig struct {
 type MetricsConfig struct {
 	Enabled bool   `toml:"enabled"`
 	Listen  string `toml:"listen"`
+}
+
+// MCPConfig holds MCP (Model Context Protocol) server configuration.
+type MCPConfig struct {
+	Enabled bool   `toml:"enabled"`
+	Listen  string `toml:"listen"` // Streamable HTTP address, e.g. ":3000"
 }
 
 // DefaultConfig returns the default daemon configuration.
@@ -110,6 +119,10 @@ func DefaultConfig() *Config {
 		Metrics: MetricsConfig{
 			Enabled: false,
 			Listen:  ":9090",
+		},
+		MCP: MCPConfig{
+			Enabled: false,
+			Listen:  ":3000",
 		},
 	}
 }
@@ -163,5 +176,9 @@ func (c *Config) ApplyEnv() {
 	}
 	if v := os.Getenv("AGENTANYCAST_ENABLE_MDNS"); v == "false" || v == "0" {
 		c.EnableMDNS = false
+	}
+	if v := os.Getenv("AGENTANYCAST_MCP_LISTEN"); v != "" {
+		c.MCP.Enabled = true
+		c.MCP.Listen = v
 	}
 }

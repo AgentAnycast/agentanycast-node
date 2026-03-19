@@ -1,0 +1,114 @@
+# AgentAnycast Node (Go Daemon)
+
+Core Go daemon (`agentanycastd`) for the AgentAnycast P2P runtime. Handles all P2P networking, encryption, NAT traversal, and A2A protocol logic. SDKs connect via gRPC over Unix domain socket.
+
+## Architecture
+
+- **Dependency injection**: Uber Fx wires all components; each package provides an `fx.Module`
+- **Logging**: Uber Zap structured JSON logging throughout
+- **Networking**: libp2p v0.47 with Noise_XX only (no plaintext transport path)
+- **Storage**: BoltDB for persistent state (tasks, cards, offline queue)
+- **Config**: TOML files + env vars + CLI flags, loaded in `internal/config/`
+
+## Directory Structure
+
+```
+cmd/
+  agentanycastd/         # Entry point, Fx app construction
+internal/
+  a2a/                   # A2A protocol engine
+    task.go              #   Task state machine
+    card.go              #   Agent card management
+    envelope.go          #   Envelope routing (11 types)
+    queue.go             #   Offline message queue
+    dedup.go             #   Deduplication cache
+  node/                  # libp2p host creation, peer connection, mDNS discovery
+  crypto/                # Ed25519 key management, Noise_XX integration
+  nat/                   # AutoNAT + DCUtR + Circuit Relay v2 client
+  store/                 # BoltDB persistence layer
+  config/                # TOML + env + CLI config loading
+  bridge/                # HTTP bridge for A2A <-> P2P interop
+  anycast/               # Skill-based anycast routing, DHT discovery, caching
+  metrics/               # Prometheus metrics
+pkg/
+  grpcserver/            # gRPC server (16 RPCs) exposed to SDKs via Unix socket
+```
+
+## Common Patterns
+
+### Fx module pattern
+
+```go
+package mypackage
+
+import "go.uber.org/fx"
+
+var Module = fx.Module("mypackage",
+    fx.Provide(New),
+)
+
+type Params struct {
+    fx.In
+    Logger *zap.Logger
+    Config *config.Config
+}
+
+func New(p Params) (*MyService, error) {
+    // ...
+}
+```
+
+### Zap structured logging
+
+```go
+s.logger.Info("task received",
+    zap.String("task_id", task.ID),
+    zap.String("from_peer", peer.String()),
+)
+s.logger.Error("envelope routing failed",
+    zap.Error(err),
+    zap.String("envelope_type", env.Type.String()),
+)
+```
+
+### libp2p stream handler
+
+```go
+host.SetStreamHandler("/agentanycast/a2a/1.0", func(s network.Stream) {
+    defer s.Close()
+    // read/write A2A envelopes
+})
+```
+
+### A2A envelope handling
+
+```go
+switch env.Type {
+case pb.EnvelopeType_TASK_CREATE:
+    // handle task creation
+case pb.EnvelopeType_TASK_UPDATE:
+    // handle task update
+case pb.EnvelopeType_TASK_COMPLETE:
+    // handle task completion
+}
+```
+
+## Code Style
+
+- Go 1.25+
+- Always use structured logging (Zap), never fmt.Printf in production code
+- All Fx modules live in their own package under `internal/`
+- Public package API in `pkg/`; internal implementation in `internal/`
+- Error wrapping: `fmt.Errorf("operation: %w", err)`
+- Context propagation: always pass `context.Context` as first parameter
+
+## Build & Test
+
+```bash
+make build                # Build -> bin/agentanycastd
+make test                 # All tests with -race
+make test-unit            # Unit tests (-short)
+make test-integration     # Integration tests (-run Integration)
+make lint                 # golangci-lint
+go test ./internal/a2a/...  # Test specific package
+```

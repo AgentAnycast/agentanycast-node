@@ -1,0 +1,72 @@
+# AgentAnycast Node (Go Daemon)
+
+> Core daemon binary (`agentanycastd`) for AgentAnycast — the decentralized P2P runtime for the A2A protocol. Handles libp2p networking, Noise_XX encryption, NAT traversal, and A2A protocol logic. SDKs communicate with this daemon over gRPC via Unix domain socket.
+
+## Documentation
+
+- [Architecture](https://github.com/AgentAnycast/agentanycast/blob/main/docs/architecture.md): Sidecar daemon design, security model, NAT traversal
+- [Protocol Reference](https://github.com/AgentAnycast/agentanycast/blob/main/docs/protocol.md): Wire format, task lifecycle, 16 gRPC RPCs
+- [Deployment](https://github.com/AgentAnycast/agentanycast/blob/main/docs/deployment.md): Relay setup, HTTP bridge, Prometheus metrics
+
+## Build
+
+```bash
+make build                # Build agentanycastd binary -> bin/
+make test                 # All tests (unit + integration, -race)
+make test-unit            # Unit tests only (-short)
+make test-integration     # Integration tests only (-run Integration)
+make lint                 # golangci-lint
+make cross-compile        # darwin/linux x amd64/arm64 + windows/amd64
+```
+
+## Key Packages
+
+### cmd/agentanycastd/
+Entry point. Wires all components together using Uber Fx dependency injection.
+
+### internal/a2a/
+A2A protocol engine: task state machine, agent card management, envelope routing (11 envelope types), offline message queue, deduplication cache.
+
+### internal/node/
+libp2p host creation, peer connection management, mDNS local discovery.
+
+### internal/crypto/
+Ed25519 key management and Noise_XX protocol integration.
+
+### internal/nat/
+NAT traversal stack: AutoNAT (external address detection), DCUtR (hole punching), Circuit Relay v2 (fallback relay).
+
+### internal/store/
+BoltDB persistence layer for tasks, agent cards, and offline message queue.
+
+### internal/config/
+Configuration loading: TOML files + environment variables + CLI flags.
+
+### internal/bridge/
+HTTP bridge for A2A <-> P2P interop: card endpoint, inbound/outbound request handlers.
+
+### internal/anycast/
+Anycast routing: skill-based addressing, DID mapping, DHT + composite discovery, result caching.
+
+### internal/metrics/
+Prometheus metrics exposition.
+
+### pkg/grpcserver/
+gRPC server exposing 16 RPC methods to SDK clients over Unix domain socket.
+
+## Key Concepts
+
+- **Sidecar model**: Daemon runs alongside the application; SDKs connect via Unix socket gRPC
+- **Uber Fx**: All components are Fx modules with dependency injection
+- **libp2p v0.47**: Networking layer with Noise-only security (no plaintext)
+- **A2A Envelope**: 11 envelope types for task lifecycle (create, update, complete, fail, cancel, etc.)
+- **Three addressing modes**: Direct (PeerID), Anycast (skill), HTTP Bridge (URL)
+- **Offline queue**: BoltDB-backed queue for messages to disconnected peers
+
+## Related Repositories
+
+- [agentanycast](https://github.com/AgentAnycast/agentanycast): Documentation hub
+- [agentanycast-python](https://github.com/AgentAnycast/agentanycast-python): Python SDK
+- [agentanycast-ts](https://github.com/AgentAnycast/agentanycast-ts): TypeScript SDK
+- [agentanycast-relay](https://github.com/AgentAnycast/agentanycast-relay): Relay server
+- [agentanycast-proto](https://github.com/AgentAnycast/agentanycast-proto): Protobuf definitions

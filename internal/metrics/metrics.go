@@ -74,6 +74,13 @@ var (
 		Name:      "offline_queue_size",
 		Help:      "Number of messages in the offline queue.",
 	})
+
+	// MCP metrics
+	MCPToolCalls = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "agentanycast",
+		Name:      "mcp_tool_calls_total",
+		Help:      "Total number of MCP tool invocations.",
+	}, []string{"tool", "status"}) // tool: tool name, status: "ok" / "error"
 )
 
 // Server runs the Prometheus metrics HTTP server.

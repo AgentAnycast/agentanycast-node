@@ -1,0 +1,29 @@
+# Smithery configuration for AgentAnycast MCP Server
+# https://smithery.ai/docs/config
+
+name: agentanycast
+description: |
+  P2P agent networking — discover, connect, and communicate with AI agents
+  across any network via encrypted P2P (Noise_XX). Zero configuration,
+  automatic NAT traversal, skill-based anycast routing.
+
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties:
+      relay:
+        type: string
+        description: "Relay server multiaddr for cross-network communication (optional)"
+      logLevel:
+        type: string
+        enum: ["debug", "info", "warn", "error"]
+        default: "error"
+        description: "Log verbosity level"
+  commandFunction: |-
+    (config) => {
+      const args = ["--mcp"];
+      if (config.relay) args.push("--bootstrap-peers", config.relay);
+      if (config.logLevel) args.push("--log-level", config.logLevel);
+      return { command: "agentanycastd", args };
+    }

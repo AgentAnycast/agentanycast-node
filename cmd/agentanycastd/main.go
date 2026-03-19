@@ -23,6 +23,7 @@ import (
 	"github.com/agentanycast/agentanycast-node/internal/bridge"
 	"github.com/agentanycast/agentanycast-node/internal/config"
 	"github.com/agentanycast/agentanycast-node/internal/crypto"
+	agentmcp "github.com/agentanycast/agentanycast-node/internal/mcp"
 	"github.com/agentanycast/agentanycast-node/internal/metrics"
 	"github.com/agentanycast/agentanycast-node/internal/node"
 	"github.com/agentanycast/agentanycast-node/internal/store"
@@ -39,6 +40,8 @@ func main() {
 		flagLogLevel       = flag.String("log-level", "", "log level (debug/info/warn/error)")
 		flagBootstrapPeers = flag.String("bootstrap-peers", "", "comma-separated bootstrap peer multiaddrs")
 		flagBridgeListen   = flag.String("bridge-listen", "", "HTTP Bridge listen address (e.g., :8080)")
+		flagMCP            = flag.Bool("mcp", false, "run as MCP server over stdio (for Claude Desktop, Cursor, etc.)")
+		flagMCPListen      = flag.String("mcp-listen", "", "MCP Streamable HTTP listen address (e.g., :3000)")
 		flagVersion        = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
@@ -303,6 +306,19 @@ func main() {
 		defer metricsSrv.Shutdown(context.Background())
 	}
 
+	// ── v0.4: MCP Server ────────────────────────────────────
+	mcpSrv := agentmcp.New(agentmcp.Config{
+		Host:           h,
+		Engine:         engine,
+		Router:         router,
+		Store:          st,
+		Logger:         logger,
+		AnycastRouter:  anycastRtr,
+		OutboundBridge: outboundBridge,
+		StreamManager:  streamMgr,
+		CardProvider:   grpcSrv.GetLocalCardBytes,
+	})
+
 	// ── Print Startup Info ───────────────────────────────────
 	logger.Info("agentanycastd started",
 		"version", version,
@@ -310,13 +326,17 @@ func main() {
 		"addresses", h.Addrs(),
 		"grpc_listen", cfg.GRPCListen,
 		"bridge_enabled", cfg.Bridge.Enabled,
+		"mcp_stdio", *flagMCP,
 		"metrics_enabled", cfg.Metrics.Enabled,
 	)
 
-	// Print to stdout for SDK to parse.
-	fmt.Printf("PEER_ID=%s\n", h.ID().String())
-	for _, addr := range h.Addrs() {
-		fmt.Printf("LISTEN_ADDR=%s/p2p/%s\n", addr, h.ID())
+	// Print to stdout for SDK to parse (suppressed in MCP stdio mode
+	// because stdout is reserved for JSON-RPC communication).
+	if !*flagMCP {
+		fmt.Printf("PEER_ID=%s\n", h.ID().String())
+		for _, addr := range h.Addrs() {
+			fmt.Printf("LISTEN_ADDR=%s/p2p/%s\n", addr, h.ID())
+		}
 	}
 
 	// ── Start gRPC Server ───────────────────────────────────
@@ -324,6 +344,30 @@ func main() {
 	go func() {
 		grpcErrCh <- grpcSrv.ListenAndServe(ctx, cfg.GRPCListen)
 	}()
+
+	// ── MCP stdio mode: block on stdin/stdout ────────────────
+	if *flagMCP {
+		if err := mcpSrv.ServeStdio(ctx); err != nil {
+			logger.Error("MCP stdio server error", "error", err)
+		}
+		cancel()
+		return
+	}
+
+	// ── MCP HTTP mode (non-blocking, like bridge) ────────────
+	if *flagMCPListen != "" || cfg.MCP.Enabled {
+		listen := cfg.MCP.Listen
+		if *flagMCPListen != "" {
+			listen = *flagMCPListen
+		}
+		mcpHTTPSrv, err := mcpSrv.ServeHTTP(listen)
+		if err != nil {
+			logger.Error("MCP HTTP server start failed", "error", err)
+		} else {
+			defer mcpHTTPSrv.Shutdown(context.Background())
+			logger.Info("MCP Streamable HTTP enabled", "addr", listen)
+		}
+	}
 
 	// ── v0.2: Auto-register Skills with Relay Registry ──────
 	if anycastRtr != nil && cfg.Anycast.AutoRegister {
