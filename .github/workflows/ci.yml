@@ -27,7 +27,9 @@ jobs:
 
       - name: Generate Go code from proto
         working-directory: agentanycast-proto
-        run: buf generate
+        run: |
+          printf 'version: v2\nplugins:\n  - remote: buf.build/protocolbuffers/go\n    out: gen/go\n    opt: paths=source_relative\n  - remote: buf.build/grpc/go\n    out: gen/go\n    opt: paths=source_relative\n' > buf.gen.go-only.yaml
+          buf generate --template buf.gen.go-only.yaml
 
       - uses: actions/setup-go@v5
         with:
@@ -60,7 +62,9 @@ jobs:
 
       - name: Generate Go code from proto
         working-directory: agentanycast-proto
-        run: buf generate
+        run: |
+          printf 'version: v2\nplugins:\n  - remote: buf.build/protocolbuffers/go\n    out: gen/go\n    opt: paths=source_relative\n  - remote: buf.build/grpc/go\n    out: gen/go\n    opt: paths=source_relative\n' > buf.gen.go-only.yaml
+          buf generate --template buf.gen.go-only.yaml
 
       - uses: actions/setup-go@v5
         with:
@@ -95,7 +99,9 @@ jobs:
 
       - name: Generate Go code from proto
         working-directory: agentanycast-proto
-        run: buf generate
+        run: |
+          printf 'version: v2\nplugins:\n  - remote: buf.build/protocolbuffers/go\n    out: gen/go\n    opt: paths=source_relative\n  - remote: buf.build/grpc/go\n    out: gen/go\n    opt: paths=source_relative\n' > buf.gen.go-only.yaml
+          buf generate --template buf.gen.go-only.yaml
 
       - uses: actions/setup-go@v5
         with:
@@ -128,7 +134,9 @@ jobs:
 
       - name: Generate Go code from proto
         working-directory: agentanycast-proto
-        run: buf generate
+        run: |
+          printf 'version: v2\nplugins:\n  - remote: buf.build/protocolbuffers/go\n    out: gen/go\n    opt: paths=source_relative\n  - remote: buf.build/grpc/go\n    out: gen/go\n    opt: paths=source_relative\n' > buf.gen.go-only.yaml
+          buf generate --template buf.gen.go-only.yaml
 
       - uses: actions/setup-go@v5
         with:
