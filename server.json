@@ -1,8 +1,8 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.agentanycast/agentanycast",
+  "name": "io.github.AgentAnycast/agentanycast",
   "title": "AgentAnycast",
-  "description": "P2P agent networking — discover, connect, and communicate with AI agents across any network via encrypted P2P (Noise_XX). Zero configuration, automatic NAT traversal, skill-based anycast routing.",
+  "description": "P2P runtime for A2A protocol. Encrypted agent communication with zero-config NAT traversal.",
   "repository": {
     "url": "https://github.com/AgentAnycast/agentanycast-node",
     "source": "github"
