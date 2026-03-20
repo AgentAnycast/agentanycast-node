@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -63,6 +64,9 @@ type Config struct {
 
 	// v0.5: Decentralized identity settings
 	Identity IdentityConfig `toml:"identity"`
+
+	// v0.7: OpenTelemetry tracing settings
+	Telemetry TelemetryConfig `toml:"telemetry"`
 }
 
 // Validate checks the configuration for logical errors and returns the first
@@ -171,6 +175,13 @@ type IdentityConfig struct {
 	// The domain's DNS TXT records at _did.<domain> should contain did:key URIs
 	// that map to this agent's identity.
 	DIDDNSDomain string `toml:"did_dns_domain"`
+}
+
+// TelemetryConfig holds OpenTelemetry tracing configuration.
+type TelemetryConfig struct {
+	Enabled      bool    `toml:"enabled"`
+	OTLPEndpoint string  `toml:"otlp_endpoint"` // e.g. "localhost:4317"
+	SampleRate   float64 `toml:"sample_rate"`    // 0.0 - 1.0, default 1.0
 }
 
 // DefaultConfig returns the default daemon configuration.
@@ -307,4 +318,13 @@ func (c *Config) ApplyEnv() {
 	// Identity settings.
 	envOverride(&c.Identity.DIDWeb, "AGENTANYCAST_DID_WEB")
 	envOverride(&c.Identity.DIDDNSDomain, "AGENTANYCAST_DID_DNS_DOMAIN")
+
+	// Telemetry settings.
+	envOverride(&c.Telemetry.OTLPEndpoint, "AGENTANYCAST_OTLP_ENDPOINT")
+	envOverrideBool(&c.Telemetry.Enabled, "AGENTANYCAST_TELEMETRY_ENABLED")
+	if v := os.Getenv("AGENTANYCAST_SAMPLE_RATE"); v != "" {
+		if rate, err := strconv.ParseFloat(v, 64); err == nil {
+			c.Telemetry.SampleRate = rate
+		}
+	}
 }

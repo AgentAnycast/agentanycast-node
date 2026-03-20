@@ -3,6 +3,7 @@ package metrics
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -92,26 +93,65 @@ var (
 	}, []string{"tool", "status"}) // tool: tool name, status: "ok" / "error"
 )
 
-// Server runs the Prometheus metrics HTTP server.
-type Server struct {
-	httpServer *http.Server
-	logger     *slog.Logger
+// HealthResponse is the JSON structure returned by the /health endpoint.
+type HealthResponse struct {
+	Status        string  `json:"status"`
+	Version       string  `json:"version"`
+	UptimeSeconds float64 `json:"uptime_seconds"`
 }
 
-// NewServer creates a new metrics server.
-func NewServer(listen string, logger *slog.Logger) *Server {
+// HealthChecker is called to determine whether the node is healthy.
+// It should return true if the node is connected and ready to serve.
+type HealthChecker func() bool
+
+// Server runs the Prometheus metrics and health HTTP server.
+type Server struct {
+	httpServer   *http.Server
+	logger       *slog.Logger
+	startTime    time.Time
+	version      string
+	healthCheck  HealthChecker
+}
+
+// NewServer creates a new metrics server with /metrics and /health endpoints.
+// healthCheck is optional — when nil the health endpoint always reports healthy.
+func NewServer(listen string, logger *slog.Logger, opts ...ServerOption) *Server {
+	s := &Server{
+		logger:    logger,
+		startTime: time.Now(),
+		version:   "dev",
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
+	mux.HandleFunc("GET /health", s.handleHealth)
 
-	return &Server{
-		httpServer: &http.Server{
-			Addr:         listen,
-			Handler:      mux,
-			ReadTimeout:  5 * time.Second,
-			WriteTimeout: 10 * time.Second,
-		},
-		logger: logger,
+	s.httpServer = &http.Server{
+		Addr:         listen,
+		Handler:      mux,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
 	}
+
+	return s
+}
+
+// ServerOption configures the metrics Server.
+type ServerOption func(*Server)
+
+// WithHealthChecker sets a function that determines node health.
+func WithHealthChecker(fn HealthChecker) ServerOption {
+	return func(s *Server) {
+		s.healthCheck = fn
+	}
+}
+
+// SetVersion sets the version string reported in health responses.
+func (s *Server) SetVersion(v string) {
+	s.version = v
 }
 
 // ListenAndServe starts the metrics server.
@@ -123,6 +163,25 @@ func (s *Server) ListenAndServe() error {
 // Shutdown gracefully stops the server.
 func (s *Server) Shutdown(ctx context.Context) error {
 	return s.httpServer.Shutdown(ctx)
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	healthy := s.healthCheck == nil || s.healthCheck()
+	statusStr := "healthy"
+	httpCode := http.StatusOK
+	if !healthy {
+		statusStr = "unhealthy"
+		httpCode = http.StatusServiceUnavailable
+	}
+
+	resp := HealthResponse{
+		Status:        statusStr,
+		Version:       s.version,
+		UptimeSeconds: time.Since(s.startTime).Seconds(),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(httpCode)
+	json.NewEncoder(w).Encode(resp) //nolint:errcheck
 }
 
 // ClassifyTransport returns a transport label ("tcp", "quic", or "webtransport")

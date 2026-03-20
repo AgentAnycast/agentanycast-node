@@ -28,6 +28,7 @@ import (
 	"github.com/agentanycast/agentanycast-node/internal/metrics"
 	"github.com/agentanycast/agentanycast-node/internal/node"
 	"github.com/agentanycast/agentanycast-node/internal/store"
+	"github.com/agentanycast/agentanycast-node/internal/telemetry"
 	"github.com/agentanycast/agentanycast-node/pkg/grpcserver"
 )
 
@@ -45,6 +46,7 @@ func main() {
 		flagANPListen          = flag.String("anp-listen", "", "ANP bridge listen address (e.g., :8090)")
 		flagMCP                = flag.Bool("mcp", false, "run as MCP server over stdio (for Claude Desktop, Cursor, etc.)")
 		flagMCPListen          = flag.String("mcp-listen", "", "MCP Streamable HTTP listen address (e.g., :3000)")
+		flagOTLPEndpoint       = flag.String("otlp-endpoint", "", "OTLP gRPC endpoint for tracing (e.g., localhost:4317)")
 		flagVersion            = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
@@ -94,6 +96,10 @@ func main() {
 		cfg.ANP.Enabled = true
 		cfg.ANP.Listen = *flagANPListen
 	}
+	if *flagOTLPEndpoint != "" {
+		cfg.Telemetry.Enabled = true
+		cfg.Telemetry.OTLPEndpoint = *flagOTLPEndpoint
+	}
 
 	// ── Logger ───────────────────────────────────────────────
 	logLevel := slog.LevelInfo
@@ -114,6 +120,25 @@ func main() {
 	}
 	logger := slog.New(handler)
 	slog.SetDefault(logger)
+
+	// ── OpenTelemetry Tracing ────────────────────────────────
+	otelShutdown, err := telemetry.Setup(context.Background(), telemetry.Config{
+		Enabled:      cfg.Telemetry.Enabled,
+		OTLPEndpoint: cfg.Telemetry.OTLPEndpoint,
+		SampleRate:   cfg.Telemetry.SampleRate,
+		ServiceName:  "agentanycast-node",
+		Version:      version,
+		Logger:       logger,
+	})
+	if err != nil {
+		logger.Error("failed to initialize telemetry", "error", err)
+		os.Exit(1)
+	}
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		otelShutdown(shutdownCtx) //nolint:errcheck
+	}()
 
 	// ── Key Management ───────────────────────────────────────
 	privKey, err := crypto.LoadOrGenerateKey(cfg.KeyPath)
@@ -177,7 +202,7 @@ func main() {
 	// v0.2: Stream Manager
 	streamMgr := a2a.NewStreamManager(logger)
 
-	router := a2a.NewRouter(engine, logger, func(sendCtx interface{}, pid peer.ID, data []byte) error {
+	router := a2a.NewRouter(engine, logger, func(sendCtx context.Context, pid peer.ID, data []byte) error {
 		if err := h.SendA2AMessage(ctx, pid, data, logger); err != nil {
 			// Peer unreachable — queue for later delivery.
 			envelopeID := a2a.ExtractEnvelopeID(data)
@@ -352,7 +377,11 @@ func main() {
 
 	// ── v0.2: Metrics Server (optional) ─────────────────────
 	if cfg.Metrics.Enabled {
-		metricsSrv := metrics.NewServer(cfg.Metrics.Listen, logger)
+		metricsSrv := metrics.NewServer(cfg.Metrics.Listen, logger,
+			metrics.WithHealthChecker(func() bool {
+				return len(h.Network().Peers()) > 0 || len(cfg.BootstrapPeers) == 0
+			}),
+		)
 		go func() {
 			if err := metricsSrv.ListenAndServe(); err != nil {
 				logger.Error("metrics server error", "error", err)

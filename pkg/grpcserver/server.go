@@ -14,6 +14,7 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health"
@@ -123,7 +124,9 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 		return fmt.Errorf("listen %s://%s: %w", network, address, err)
 	}
 
-	srv := grpc.NewServer()
+	srv := grpc.NewServer(
+		grpc.StatsHandler(otelgrpc.NewServerHandler()),
+	)
 	pb.RegisterNodeServiceServer(srv, s)
 
 	// Register health check service
@@ -494,7 +497,7 @@ func (s *Server) CancelTask(ctx context.Context, req *pb.CancelTaskRequest) (*pb
 		}
 	}
 
-	if err := s.engine.TransitionTask(req.TaskId, a2a.StatusCanceled); err != nil {
+	if err := s.engine.TransitionTask(ctx, req.TaskId, a2a.StatusCanceled); err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
 	}
 
@@ -588,7 +591,7 @@ func (s *Server) UpdateTaskStatus(ctx context.Context, req *pb.UpdateTaskStatusR
 	}
 
 	newStatus := a2a.ProtoToTaskStatus(req.Status)
-	if err := s.engine.TransitionTask(req.TaskId, newStatus); err != nil {
+	if err := s.engine.TransitionTask(ctx, req.TaskId, newStatus); err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
 	}
 
@@ -615,7 +618,7 @@ func (s *Server) CompleteTask(ctx context.Context, req *pb.CompleteTaskRequest) 
 		return nil, status.Error(codes.InvalidArgument, "task_id is required")
 	}
 
-	if err := s.engine.TransitionTask(req.TaskId, a2a.StatusCompleted); err != nil {
+	if err := s.engine.TransitionTask(ctx, req.TaskId, a2a.StatusCompleted); err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
 	}
 
@@ -642,7 +645,7 @@ func (s *Server) FailTask(ctx context.Context, req *pb.FailTaskRequest) (*pb.Fai
 		return nil, status.Error(codes.InvalidArgument, "task_id is required")
 	}
 
-	if err := s.engine.TransitionTask(req.TaskId, a2a.StatusFailed); err != nil {
+	if err := s.engine.TransitionTask(ctx, req.TaskId, a2a.StatusFailed); err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
 	}
 
