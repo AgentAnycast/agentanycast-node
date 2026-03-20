@@ -6,7 +6,11 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/agentanycast/agentanycast-node/internal/telemetry"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Router resolves skill-based addresses to concrete peer endpoints.
@@ -45,10 +49,19 @@ func NewRouter(cfg RouterConfig) *Router {
 // Resolve finds a target peer for the given skill.
 // It checks the cache first, then queries the discovery provider.
 func (r *Router) Resolve(ctx context.Context, skillID string) (peer.ID, error) {
+	ctx, span := telemetry.Tracer("agentanycast.anycast").Start(ctx, "anycast.resolve",
+		trace.WithAttributes(attribute.String("skill_id", skillID)),
+	)
+	defer span.End()
+
 	// Check cache first.
 	if endpoints := r.cache.Get(skillID); len(endpoints) > 0 {
 		selected, err := r.strategy.Select(ctx, endpoints)
 		if err == nil {
+			span.SetAttributes(
+				attribute.Bool("cache_hit", true),
+				attribute.String("target", selected.PeerID.String()),
+			)
 			r.logger.Debug("route resolved from cache",
 				"skill_id", skillID,
 				"target", selected.PeerID,
@@ -60,10 +73,15 @@ func (r *Router) Resolve(ctx context.Context, skillID string) (peer.ID, error) {
 	// Query discovery provider.
 	endpoints, err := r.discovery.DiscoverBySkill(ctx, skillID)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return "", fmt.Errorf("discover skill %q: %w", skillID, err)
 	}
 	if len(endpoints) == 0 {
-		return "", fmt.Errorf("no agents found for skill %q", skillID)
+		err := fmt.Errorf("no agents found for skill %q", skillID)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return "", err
 	}
 
 	// Cache the results.
@@ -72,9 +90,16 @@ func (r *Router) Resolve(ctx context.Context, skillID string) (peer.ID, error) {
 	// Select a target.
 	selected, err := r.strategy.Select(ctx, endpoints)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return "", fmt.Errorf("select target for skill %q: %w", skillID, err)
 	}
 
+	span.SetAttributes(
+		attribute.Bool("cache_hit", false),
+		attribute.Int("candidates", len(endpoints)),
+		attribute.String("target", selected.PeerID.String()),
+	)
 	r.logger.Info("route resolved",
 		"skill_id", skillID,
 		"target", selected.PeerID,

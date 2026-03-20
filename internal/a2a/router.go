@@ -3,6 +3,7 @@
 package a2a
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -10,14 +11,18 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pb "github.com/agentanycast/agentanycast-proto/gen/go/agentanycast/v1"
+	"github.com/agentanycast/agentanycast-node/internal/telemetry"
 )
 
 // SendFunc sends serialized bytes to a remote peer over libp2p.
-type SendFunc func(ctx interface{}, pid peer.ID, data []byte) error
+type SendFunc func(ctx context.Context, pid peer.ID, data []byte) error
 
 // PeerCardFunc returns the raw agent card bytes for a peer, if available.
 type PeerCardFunc func(pid peer.ID) ([]byte, bool)
@@ -134,6 +139,18 @@ func (r *Router) HandleMessage(remotePeer peer.ID, data []byte) {
 		return
 	}
 
+	// Extract W3C trace context from the envelope.
+	ctx := telemetry.ExtractTraceContext(context.Background(), &env)
+	tracer := telemetry.Tracer("agentanycast.a2a")
+	ctx, span := tracer.Start(ctx, "a2a.handle_message",
+		trace.WithAttributes(
+			attribute.String("envelope_id", env.EnvelopeId),
+			attribute.String("envelope_type", env.Type.String()),
+			attribute.String("peer_id", remotePeer.String()),
+		),
+	)
+	defer span.End()
+
 	r.logger.Debug("routing A2A envelope",
 		"peer", remotePeer,
 		"type", env.Type.String(),
@@ -150,15 +167,15 @@ func (r *Router) HandleMessage(remotePeer peer.ID, data []byte) {
 
 	switch env.Type {
 	case pb.EnvelopeType_ENVELOPE_TYPE_SEND_TASK:
-		r.handleSendTask(remotePeer, &env)
+		r.handleSendTask(ctx, remotePeer, &env)
 	case pb.EnvelopeType_ENVELOPE_TYPE_TASK_STATUS_UPDATE:
-		r.handleTaskStatusUpdate(remotePeer, &env)
+		r.handleTaskStatusUpdate(ctx, remotePeer, &env)
 	case pb.EnvelopeType_ENVELOPE_TYPE_TASK_COMPLETE:
-		r.handleTaskComplete(remotePeer, &env)
+		r.handleTaskComplete(ctx, remotePeer, &env)
 	case pb.EnvelopeType_ENVELOPE_TYPE_TASK_FAIL:
-		r.handleTaskFail(remotePeer, &env)
+		r.handleTaskFail(ctx, remotePeer, &env)
 	case pb.EnvelopeType_ENVELOPE_TYPE_TASK_CANCEL:
-		r.handleTaskCancel(remotePeer, &env)
+		r.handleTaskCancel(ctx, remotePeer, &env)
 	case pb.EnvelopeType_ENVELOPE_TYPE_ACK:
 		r.handleAck(remotePeer, &env)
 		return // Don't send an ACK for an ACK
@@ -168,12 +185,12 @@ func (r *Router) HandleMessage(remotePeer peer.ID, data []byte) {
 	}
 
 	// Send ACK back to sender for all non-ACK envelope types.
-	if err := SendAck(r.sendFn, nil, remotePeer, env.EnvelopeId); err != nil {
+	if err := SendAck(r.sendFn, ctx, remotePeer, env.EnvelopeId); err != nil {
 		r.logger.Warn("failed to send ACK", "envelope_id", env.EnvelopeId, "error", err)
 	}
 }
 
-func (r *Router) handleSendTask(remotePeer peer.ID, env *pb.A2AEnvelope) {
+func (r *Router) handleSendTask(_ context.Context, remotePeer peer.ID, env *pb.A2AEnvelope) {
 	payload := env.GetSendTask()
 	if payload == nil {
 		r.logger.Warn("send_task envelope missing payload")
@@ -238,14 +255,14 @@ func (r *Router) handleSendTask(remotePeer peer.ID, env *pb.A2AEnvelope) {
 	r.logger.Info("incoming task registered", "task_id", taskID, "from", remotePeer)
 }
 
-func (r *Router) handleTaskStatusUpdate(remotePeer peer.ID, env *pb.A2AEnvelope) {
+func (r *Router) handleTaskStatusUpdate(ctx context.Context, remotePeer peer.ID, env *pb.A2AEnvelope) {
 	payload := env.GetTaskStatusUpdate()
 	if payload == nil {
 		return
 	}
 
 	newStatus := ProtoToTaskStatus(payload.Status)
-	if err := r.engine.TransitionTask(payload.TaskId, newStatus); err != nil {
+	if err := r.engine.TransitionTask(ctx, payload.TaskId, newStatus); err != nil {
 		r.logger.Warn("status update rejected", "task_id", payload.TaskId, "error", err)
 		return
 	}
@@ -254,13 +271,13 @@ func (r *Router) handleTaskStatusUpdate(remotePeer peer.ID, env *pb.A2AEnvelope)
 	r.notifyUpdate(payload.TaskId, payload.Status, payload.Message, nil)
 }
 
-func (r *Router) handleTaskComplete(remotePeer peer.ID, env *pb.A2AEnvelope) {
+func (r *Router) handleTaskComplete(ctx context.Context, remotePeer peer.ID, env *pb.A2AEnvelope) {
 	payload := env.GetTaskComplete()
 	if payload == nil {
 		return
 	}
 
-	if err := r.engine.TransitionTask(payload.TaskId, StatusCompleted); err != nil {
+	if err := r.engine.TransitionTask(ctx, payload.TaskId, StatusCompleted); err != nil {
 		r.logger.Warn("complete rejected", "task_id", payload.TaskId, "error", err)
 		return
 	}
@@ -268,13 +285,13 @@ func (r *Router) handleTaskComplete(remotePeer peer.ID, env *pb.A2AEnvelope) {
 	r.notifyUpdate(payload.TaskId, pb.TaskStatus_TASK_STATUS_COMPLETED, payload.Message, payload.Artifacts)
 }
 
-func (r *Router) handleTaskFail(remotePeer peer.ID, env *pb.A2AEnvelope) {
+func (r *Router) handleTaskFail(ctx context.Context, remotePeer peer.ID, env *pb.A2AEnvelope) {
 	payload := env.GetTaskFail()
 	if payload == nil {
 		return
 	}
 
-	if err := r.engine.TransitionTask(payload.TaskId, StatusFailed); err != nil {
+	if err := r.engine.TransitionTask(ctx, payload.TaskId, StatusFailed); err != nil {
 		r.logger.Warn("fail rejected", "task_id", payload.TaskId, "error", err)
 		return
 	}
@@ -282,13 +299,13 @@ func (r *Router) handleTaskFail(remotePeer peer.ID, env *pb.A2AEnvelope) {
 	r.notifyUpdate(payload.TaskId, pb.TaskStatus_TASK_STATUS_FAILED, payload.Message, nil)
 }
 
-func (r *Router) handleTaskCancel(remotePeer peer.ID, env *pb.A2AEnvelope) {
+func (r *Router) handleTaskCancel(ctx context.Context, remotePeer peer.ID, env *pb.A2AEnvelope) {
 	payload := env.GetTaskCancel()
 	if payload == nil {
 		return
 	}
 
-	if err := r.engine.TransitionTask(payload.TaskId, StatusCanceled); err != nil {
+	if err := r.engine.TransitionTask(ctx, payload.TaskId, StatusCanceled); err != nil {
 		r.logger.Warn("cancel rejected", "task_id", payload.TaskId, "error", err)
 		return
 	}
@@ -361,8 +378,18 @@ func (r *Router) notifyUpdate(taskID string, status pb.TaskStatus, msg *pb.Messa
 }
 
 // SendTask creates and sends a task to a remote peer.
-func (r *Router) SendTask(ctx interface{}, targetPeer peer.ID, msg *pb.Message, targetSkillID, contextID string) (*Task, error) {
+func (r *Router) SendTask(ctx context.Context, targetPeer peer.ID, msg *pb.Message, targetSkillID, contextID string) (*Task, error) {
 	task := r.engine.CreateTask(contextID, targetSkillID, "local")
+
+	tracer := telemetry.Tracer("agentanycast.a2a")
+	spanCtx, span := tracer.Start(ctx, "a2a.send_task",
+		trace.WithAttributes(
+			attribute.String("task_id", task.ID),
+			attribute.String("peer_id", targetPeer.String()),
+			attribute.String("skill_id", targetSkillID),
+		),
+	)
+	defer span.End()
 
 	env := &pb.A2AEnvelope{
 		EnvelopeId: uuid.New().String(),
@@ -378,12 +405,19 @@ func (r *Router) SendTask(ctx interface{}, targetPeer peer.ID, msg *pb.Message, 
 		},
 	}
 
+	// Inject trace context into the envelope for distributed tracing.
+	telemetry.InjectTraceContext(spanCtx, env)
+
 	data, err := proto.Marshal(env)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("marshal envelope: %w", err)
 	}
 
 	if err := r.sendFn(ctx, targetPeer, data); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("send task to %s: %w", targetPeer, err)
 	}
 
@@ -394,7 +428,7 @@ func (r *Router) SendTask(ctx interface{}, targetPeer peer.ID, msg *pb.Message, 
 }
 
 // SendStatusUpdate sends a task status update to the originator peer.
-func (r *Router) SendStatusUpdate(ctx interface{}, targetPeer peer.ID, taskID string, status pb.TaskStatus, msg *pb.Message) error {
+func (r *Router) SendStatusUpdate(ctx context.Context, targetPeer peer.ID, taskID string, status pb.TaskStatus, msg *pb.Message) error {
 	env := &pb.A2AEnvelope{
 		EnvelopeId: uuid.New().String(),
 		Type:       pb.EnvelopeType_ENVELOPE_TYPE_TASK_STATUS_UPDATE,
@@ -421,7 +455,7 @@ func (r *Router) SendStatusUpdate(ctx interface{}, targetPeer peer.ID, taskID st
 }
 
 // SendComplete sends a task completion message to the originator peer.
-func (r *Router) SendComplete(ctx interface{}, targetPeer peer.ID, taskID string, artifacts []*pb.Artifact, msg *pb.Message) error {
+func (r *Router) SendComplete(ctx context.Context, targetPeer peer.ID, taskID string, artifacts []*pb.Artifact, msg *pb.Message) error {
 	env := &pb.A2AEnvelope{
 		EnvelopeId: uuid.New().String(),
 		Type:       pb.EnvelopeType_ENVELOPE_TYPE_TASK_COMPLETE,
@@ -448,7 +482,7 @@ func (r *Router) SendComplete(ctx interface{}, targetPeer peer.ID, taskID string
 }
 
 // SendFail sends a task failure message to the originator peer.
-func (r *Router) SendFail(ctx interface{}, targetPeer peer.ID, taskID, errorMessage string) error {
+func (r *Router) SendFail(ctx context.Context, targetPeer peer.ID, taskID, errorMessage string) error {
 	env := &pb.A2AEnvelope{
 		EnvelopeId: uuid.New().String(),
 		Type:       pb.EnvelopeType_ENVELOPE_TYPE_TASK_FAIL,

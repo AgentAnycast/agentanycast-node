@@ -1,6 +1,7 @@
 package a2a
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -104,7 +105,7 @@ func (at *AckTracker) Stop() {
 }
 
 // SendAck sends an ACK envelope back to the sender for the given envelope ID.
-func SendAck(sendFn SendFunc, ctx interface{}, target peer.ID, acknowledgedEnvelopeID string) error {
+func SendAck(sendFn SendFunc, ctx context.Context, target peer.ID, acknowledgedEnvelopeID string) error {
 	env := &pb.A2AEnvelope{
 		EnvelopeId: uuid.New().String(),
 		Type:       pb.EnvelopeType_ENVELOPE_TYPE_ACK,
@@ -179,7 +180,7 @@ func (at *AckTracker) processRetries(now time.Time) {
 			"retry", pm.retries+1,
 		)
 
-		if err := at.sendFn(nil, pm.target, pm.data); err != nil {
+		if err := at.sendFn(context.Background(), pm.target, pm.data); err != nil {
 			at.logger.Warn("retry send failed",
 				"envelope_id", pm.envelopeID,
 				"error", err,

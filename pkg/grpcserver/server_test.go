@@ -56,7 +56,7 @@ func testSetup(t *testing.T) (pb.NodeServiceClient, *Server, func()) {
 	engine := a2a.NewEngine(logger)
 	engine.SetStore(st)
 
-	router := a2a.NewRouter(engine, logger, func(_ interface{}, _ peer.ID, _ []byte) error {
+	router := a2a.NewRouter(engine, logger, func(_ context.Context, _ peer.ID, _ []byte) error {
 		return nil // no-op send for tests
 	}, nil, nil)
 
@@ -481,7 +481,7 @@ func TestGracefulShutdownWithContext(t *testing.T) {
 	engine := a2a.NewEngine(logger)
 	engine.SetStore(st)
 
-	router := a2a.NewRouter(engine, logger, func(_ interface{}, _ peer.ID, _ []byte) error {
+	router := a2a.NewRouter(engine, logger, func(_ context.Context, _ peer.ID, _ []byte) error {
 		return nil
 	}, nil, nil)
 

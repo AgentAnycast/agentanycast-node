@@ -1,6 +1,7 @@
 package a2a
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"testing"
@@ -71,7 +72,7 @@ func TestValidTransitions(t *testing.T) {
 
 			var lastErr error
 			for _, status := range tt.transitions {
-				lastErr = e.TransitionTask(task.ID, status)
+				lastErr = e.TransitionTask(context.Background(), task.ID, status)
 				if lastErr != nil {
 					break
 				}
@@ -91,10 +92,10 @@ func TestTerminalStateRejectsTransition(t *testing.T) {
 	e := NewEngine(testLogger())
 	task := e.CreateTask("", "", "peer-a")
 
-	_ = e.TransitionTask(task.ID, StatusWorking)
-	_ = e.TransitionTask(task.ID, StatusCompleted)
+	_ = e.TransitionTask(context.Background(), task.ID, StatusWorking)
+	_ = e.TransitionTask(context.Background(), task.ID, StatusCompleted)
 
-	err := e.TransitionTask(task.ID, StatusFailed)
+	err := e.TransitionTask(context.Background(), task.ID, StatusFailed)
 	if err == nil {
 		t.Fatal("expected error when transitioning from terminal state")
 	}
@@ -109,7 +110,7 @@ func TestOnTaskUpdateCallback(t *testing.T) {
 	})
 
 	task := e.CreateTask("", "", "peer-a")
-	_ = e.TransitionTask(task.ID, StatusWorking)
+	_ = e.TransitionTask(context.Background(), task.ID, StatusWorking)
 
 	if !called {
 		t.Fatal("onTaskUpdate callback was not called")

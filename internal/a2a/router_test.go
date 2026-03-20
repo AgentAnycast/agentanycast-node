@@ -1,6 +1,7 @@
 package a2a
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -27,7 +28,7 @@ func TestRouterHandleSendTask(t *testing.T) {
 	engine := NewEngine(testLogger())
 
 	// Track sent messages (we use a no-op send function here).
-	router := NewRouter(engine, testLogger(), func(_ interface{}, _ peer.ID, _ []byte) error {
+	router := NewRouter(engine, testLogger(), func(_ context.Context, _ peer.ID, _ []byte) error {
 		return nil
 	}, nil, nil)
 
@@ -97,7 +98,7 @@ func TestRouterHandleSendTask(t *testing.T) {
 func TestRouterHandleTaskStatusUpdate(t *testing.T) {
 	engine := NewEngine(testLogger())
 
-	router := NewRouter(engine, testLogger(), func(_ interface{}, _ peer.ID, _ []byte) error {
+	router := NewRouter(engine, testLogger(), func(_ context.Context, _ peer.ID, _ []byte) error {
 		return nil
 	}, nil, nil)
 
@@ -107,7 +108,7 @@ func TestRouterHandleTaskStatusUpdate(t *testing.T) {
 	task := engine.CreateTask("ctx-1", "skill-1", remotePeer.String())
 
 	// Transition to WORKING first (required before COMPLETED).
-	if err := engine.TransitionTask(task.ID, StatusWorking); err != nil {
+	if err := engine.TransitionTask(context.Background(), task.ID, StatusWorking); err != nil {
 		t.Fatalf("transition to WORKING: %v", err)
 	}
 
@@ -162,7 +163,7 @@ func TestRouterDedupDropsDuplicateEnvelopes(t *testing.T) {
 	engine := NewEngine(testLogger())
 
 	var sendCount int
-	router := NewRouter(engine, testLogger(), func(_ interface{}, _ peer.ID, _ []byte) error {
+	router := NewRouter(engine, testLogger(), func(_ context.Context, _ peer.ID, _ []byte) error {
 		sendCount++
 		return nil
 	}, nil, nil)
@@ -226,7 +227,7 @@ func TestRouterDedupDropsDuplicateEnvelopes(t *testing.T) {
 func TestRouterDedupEvictsOldEntries(t *testing.T) {
 	engine := NewEngine(testLogger())
 
-	router := NewRouter(engine, testLogger(), func(_ interface{}, _ peer.ID, _ []byte) error {
+	router := NewRouter(engine, testLogger(), func(_ context.Context, _ peer.ID, _ []byte) error {
 		return nil
 	}, nil, nil)
 
@@ -255,7 +256,7 @@ func TestRouterDedupEvictsOldEntries(t *testing.T) {
 	}
 
 	// Test simpler: verify cache doesn't grow beyond limit.
-	router2 := NewRouter(engine, testLogger(), func(_ interface{}, _ peer.ID, _ []byte) error {
+	router2 := NewRouter(engine, testLogger(), func(_ context.Context, _ peer.ID, _ []byte) error {
 		return nil
 	}, nil, nil)
 
@@ -289,7 +290,7 @@ func TestRouterACKsNotDeduped(t *testing.T) {
 	engine := NewEngine(testLogger())
 
 	ackCount := 0
-	router := NewRouter(engine, testLogger(), func(_ interface{}, _ peer.ID, _ []byte) error {
+	router := NewRouter(engine, testLogger(), func(_ context.Context, _ peer.ID, _ []byte) error {
 		return nil
 	}, nil, nil)
 
@@ -326,7 +327,7 @@ func TestRouterACKsNotDeduped(t *testing.T) {
 func TestRouterSlowSubscriberDropsEvents(t *testing.T) {
 	engine := NewEngine(testLogger())
 
-	router := NewRouter(engine, testLogger(), func(_ interface{}, _ peer.ID, _ []byte) error {
+	router := NewRouter(engine, testLogger(), func(_ context.Context, _ peer.ID, _ []byte) error {
 		return nil
 	}, nil, nil)
 
@@ -342,9 +343,9 @@ func TestRouterSlowSubscriberDropsEvents(t *testing.T) {
 	// Fill the channel to capacity by rapidly transitioning states.
 	// The channel has capacity 16, so let's fill it by doing transitions
 	// but NOT draining the channel.
-	_ = engine.TransitionTask(task.ID, StatusWorking)
-	_ = engine.TransitionTask(task.ID, StatusInputRequired)
-	_ = engine.TransitionTask(task.ID, StatusWorking)
+	_ = engine.TransitionTask(context.Background(), task.ID, StatusWorking)
+	_ = engine.TransitionTask(context.Background(), task.ID, StatusInputRequired)
+	_ = engine.TransitionTask(context.Background(), task.ID, StatusWorking)
 
 	// Drain what we can.
 	drained := 0
@@ -367,7 +368,7 @@ done:
 func TestRouterNotifyUpdateDropsForFullChannel(t *testing.T) {
 	engine := NewEngine(testLogger())
 
-	router := NewRouter(engine, testLogger(), func(_ interface{}, _ peer.ID, _ []byte) error {
+	router := NewRouter(engine, testLogger(), func(_ context.Context, _ peer.ID, _ []byte) error {
 		return nil
 	}, nil, nil)
 
@@ -381,10 +382,10 @@ func TestRouterNotifyUpdateDropsForFullChannel(t *testing.T) {
 	router.mu.Unlock()
 
 	// Fire multiple updates — first fills the buffer, rest should be dropped (logged).
-	_ = engine.TransitionTask(task.ID, StatusWorking)
-	_ = engine.TransitionTask(task.ID, StatusInputRequired)
-	_ = engine.TransitionTask(task.ID, StatusWorking)
-	_ = engine.TransitionTask(task.ID, StatusCompleted)
+	_ = engine.TransitionTask(context.Background(), task.ID, StatusWorking)
+	_ = engine.TransitionTask(context.Background(), task.ID, StatusInputRequired)
+	_ = engine.TransitionTask(context.Background(), task.ID, StatusWorking)
+	_ = engine.TransitionTask(context.Background(), task.ID, StatusCompleted)
 
 	// We should get at most 1 event from the tiny channel.
 	select {
@@ -401,7 +402,7 @@ func TestRouterNotifyUpdateDropsForFullChannel(t *testing.T) {
 func TestRouterHandleInvalidStatusUpdate(t *testing.T) {
 	engine := NewEngine(testLogger())
 
-	router := NewRouter(engine, testLogger(), func(_ interface{}, _ peer.ID, _ []byte) error {
+	router := NewRouter(engine, testLogger(), func(_ context.Context, _ peer.ID, _ []byte) error {
 		return nil
 	}, nil, nil)
 

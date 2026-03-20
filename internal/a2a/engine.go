@@ -3,6 +3,7 @@
 package a2a
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -10,7 +11,10 @@ import (
 	"time"
 
 	"github.com/agentanycast/agentanycast-node/internal/store"
+	"github.com/agentanycast/agentanycast-node/internal/telemetry"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // TaskStatus mirrors the A2A protocol task statuses.
@@ -193,7 +197,15 @@ func (e *Engine) RegisterTask(task *Task) {
 
 // TransitionTask attempts to move a task to a new status.
 // Returns an error if the transition is not allowed.
-func (e *Engine) TransitionTask(taskID string, newStatus TaskStatus) error {
+func (e *Engine) TransitionTask(ctx context.Context, taskID string, newStatus TaskStatus) error { //nolint:cyclop
+	ctx, span := telemetry.Tracer("agentanycast.a2a").Start(ctx, "a2a.task.transition",
+		trace.WithAttributes(
+			attribute.String("task_id", taskID),
+			attribute.String("to_status", newStatus.String()),
+		),
+	)
+	defer span.End()
+	_ = ctx // available for future child spans
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -223,6 +235,7 @@ func (e *Engine) TransitionTask(taskID string, newStatus TaskStatus) error {
 	}
 
 	oldStatus := task.Status
+	span.SetAttributes(attribute.String("from_status", oldStatus.String()))
 	task.Status = newStatus
 	task.UpdatedAt = time.Now()
 
