@@ -13,6 +13,23 @@ import (
 	"github.com/google/uuid"
 )
 
+// ClientOption configures a Client.
+type ClientOption func(*Client)
+
+// WithHTTPClient sets a custom http.Client for outbound requests.
+func WithHTTPClient(c *http.Client) ClientOption {
+	return func(cl *Client) {
+		cl.httpClient = c
+	}
+}
+
+// WithTimeout sets the HTTP client timeout for outbound requests.
+func WithTimeout(d time.Duration) ClientOption {
+	return func(cl *Client) {
+		cl.httpClient.Timeout = d
+	}
+}
+
 // Client is an outbound HTTP client for calling ANP agents.
 type Client struct {
 	httpClient *http.Client
@@ -20,13 +37,17 @@ type Client struct {
 }
 
 // NewClient creates a new ANP outbound client.
-func NewClient(logger *slog.Logger) *Client {
-	return &Client{
+func NewClient(logger *slog.Logger, opts ...ClientOption) *Client {
+	c := &Client{
 		httpClient: &http.Client{
 			Timeout: 60 * time.Second,
 		},
 		logger: logger,
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 // FetchDescription fetches an ANP agent's Agent Description document.
@@ -39,23 +60,26 @@ func (c *Client) FetchDescription(ctx context.Context, baseURL string) (*AgentDe
 	}
 	req.Header.Set("Accept", "application/json")
 
+	start := time.Now()
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch agent description from %s: %w", url, err)
 	}
 	defer resp.Body.Close()
 
+	c.logger.Debug("ANP call completed",
+		"url", url,
+		"method", "FetchDescription",
+		"status", resp.StatusCode,
+		"duration", time.Since(start),
+	)
+
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1 MiB limit
-	if err != nil {
-		return nil, fmt.Errorf("read agent description: %w", err)
-	}
-
 	var desc AgentDescription
-	if err := json.Unmarshal(body, &desc); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&desc); err != nil {
 		return nil, fmt.Errorf("decode agent description: %w", err)
 	}
 
@@ -72,23 +96,26 @@ func (c *Client) FetchInterface(ctx context.Context, baseURL string) (*OpenRPCSp
 	}
 	req.Header.Set("Accept", "application/json")
 
+	start := time.Now()
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch interface from %s: %w", url, err)
 	}
 	defer resp.Body.Close()
 
+	c.logger.Debug("ANP call completed",
+		"url", url,
+		"method", "FetchInterface",
+		"status", resp.StatusCode,
+		"duration", time.Since(start),
+	)
+
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1 MiB limit
-	if err != nil {
-		return nil, fmt.Errorf("read OpenRPC spec: %w", err)
-	}
-
 	var spec OpenRPCSpec
-	if err := json.Unmarshal(body, &spec); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&spec); err != nil {
 		return nil, fmt.Errorf("decode OpenRPC spec: %w", err)
 	}
 
@@ -96,7 +123,7 @@ func (c *Client) FetchInterface(ctx context.Context, baseURL string) (*OpenRPCSp
 }
 
 // CallMethod calls a JSON-RPC method on an ANP agent.
-func (c *Client) CallMethod(ctx context.Context, baseURL, method string, params interface{}) (*JSONRPCResponse, error) {
+func (c *Client) CallMethod(ctx context.Context, baseURL, method string, params any) (*JSONRPCResponse, error) {
 	url := baseURL + "/agent/rpc"
 
 	rpcReq := JSONRPCRequest{
@@ -117,28 +144,27 @@ func (c *Client) CallMethod(ctx context.Context, baseURL, method string, params 
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	c.logger.Debug("ANP outbound call",
-		"url", url,
-		"method", method,
-	)
-
+	start := time.Now()
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("RPC call to %s: %w", url, err)
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20)) // 16MB max
-	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
-	}
+	c.logger.Debug("ANP call completed",
+		"url", url,
+		"method", method,
+		"status", resp.StatusCode,
+		"duration", time.Since(start),
+	)
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d from %s: %s", resp.StatusCode, url, string(respBody))
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<10))
+		return nil, fmt.Errorf("HTTP %d from %s: %s", resp.StatusCode, url, string(errBody))
 	}
 
 	var rpcResp JSONRPCResponse
-	if err := json.Unmarshal(respBody, &rpcResp); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(&rpcResp); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 
@@ -150,7 +176,7 @@ func (c *Client) CallMethod(ctx context.Context, baseURL, method string, params 
 func (c *Client) SendTask(ctx context.Context, targetURL string, skillID string, messageText string) (string, error) {
 	taskID := uuid.New().String()
 
-	params := map[string]interface{}{
+	params := map[string]any{
 		"input":   messageText,
 		"task_id": taskID,
 	}
@@ -164,18 +190,5 @@ func (c *Client) SendTask(ctx context.Context, targetURL string, skillID string,
 		return "", fmt.Errorf("ANP error %d: %s", resp.Error.Code, resp.Error.Message)
 	}
 
-	// Extract text from the result.
-	switch v := resp.Result.(type) {
-	case string:
-		return v, nil
-	case map[string]interface{}:
-		if text, ok := v["text"]; ok {
-			return fmt.Sprintf("%v", text), nil
-		}
-		data, _ := json.Marshal(v)
-		return string(data), nil
-	default:
-		data, _ := json.Marshal(v)
-		return string(data), nil
-	}
+	return extractTextFromResult(resp.Result), nil
 }

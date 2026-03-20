@@ -74,7 +74,7 @@ func SkillsToOpenRPC(skills []*pb.Skill, agentName, version string) *OpenRPCSpec
 
 		// Convert input schema to a params definition if present.
 		if s.InputSchema != "" {
-			var schema interface{}
+			var schema any
 			if err := json.Unmarshal([]byte(s.InputSchema), &schema); err == nil {
 				method.Params = []RPCParam{
 					{
@@ -88,7 +88,7 @@ func SkillsToOpenRPC(skills []*pb.Skill, agentName, version string) *OpenRPCSpec
 
 		// Convert output schema to a result definition if present.
 		if s.OutputSchema != "" {
-			var schema interface{}
+			var schema any
 			if err := json.Unmarshal([]byte(s.OutputSchema), &schema); err == nil {
 				method.Result = &RPCResult{
 					Name:   "result",
@@ -145,7 +145,7 @@ func TaskToJSONRPCRequest(skillID string, messageText string, taskID string) *JS
 	return &JSONRPCRequest{
 		JSONRPC: "2.0",
 		Method:  skillID,
-		Params: map[string]interface{}{
+		Params: map[string]any{
 			"input":   messageText,
 			"task_id": taskID,
 		},
@@ -154,28 +154,31 @@ func TaskToJSONRPCRequest(skillID string, messageText string, taskID string) *JS
 }
 
 // JSONRPCResultToArtifact converts a JSON-RPC result to an A2A Artifact.
-func JSONRPCResultToArtifact(result interface{}) *pb.Artifact {
-	var text string
-	switch v := result.(type) {
-	case string:
-		text = v
-	case map[string]interface{}:
-		if t, ok := v["text"]; ok {
-			text = fmt.Sprintf("%v", t)
-		} else {
-			data, _ := json.Marshal(v)
-			text = string(data)
-		}
-	default:
-		data, _ := json.Marshal(v)
-		text = string(data)
-	}
-
+func JSONRPCResultToArtifact(result any) *pb.Artifact {
 	return &pb.Artifact{
 		ArtifactId: uuid.New().String(),
 		Name:       "anp-result",
 		Parts: []*pb.Part{
-			{Content: &pb.Part_TextPart{TextPart: &pb.TextPart{Text: text}}},
+			{Content: &pb.Part_TextPart{TextPart: &pb.TextPart{Text: extractTextFromResult(result)}}},
 		},
+	}
+}
+
+// extractTextFromResult extracts a text string from a JSON-RPC result value.
+// It handles string results directly, maps with a "text" key, and falls back
+// to JSON serialization for other types.
+func extractTextFromResult(result any) string {
+	switch v := result.(type) {
+	case string:
+		return v
+	case map[string]any:
+		if text, ok := v["text"]; ok {
+			return fmt.Sprintf("%v", text)
+		}
+		data, _ := json.Marshal(v)
+		return string(data)
+	default:
+		data, _ := json.Marshal(v)
+		return string(data)
 	}
 }

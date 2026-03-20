@@ -65,7 +65,8 @@ type cardStore interface {
 
 // NewHost creates and starts a libp2p host with the given configuration.
 func NewHost(ctx context.Context, cfg HostConfig, logger *slog.Logger) (*Host, error) {
-	listenAddrs := make([]multiaddr.Multiaddr, 0, len(cfg.ListenAddrs))
+	// Build all listen addresses up front, including optional transports.
+	listenAddrs := make([]multiaddr.Multiaddr, 0, len(cfg.ListenAddrs)+1)
 	for _, addr := range cfg.ListenAddrs {
 		ma, err := multiaddr.NewMultiaddr(addr)
 		if err != nil {
@@ -74,6 +75,17 @@ func NewHost(ctx context.Context, cfg HostConfig, logger *slog.Logger) (*Host, e
 		listenAddrs = append(listenAddrs, ma)
 	}
 
+	if cfg.EnableWebTransport {
+		wtMA, err := multiaddr.NewMultiaddr("/ip4/0.0.0.0/udp/0/quic-v1/webtransport")
+		if err != nil {
+			logger.Warn("failed to parse WebTransport listen address", "error", err)
+		} else {
+			listenAddrs = append(listenAddrs, wtMA)
+		}
+		logger.Info("WebTransport enabled")
+	}
+
+	// Build libp2p options with the complete listen address set.
 	opts := []libp2p.Option{
 		libp2p.Identity(cfg.PrivateKey),
 		libp2p.ListenAddrs(listenAddrs...),
@@ -91,16 +103,6 @@ func NewHost(ctx context.Context, cfg HostConfig, logger *slog.Logger) (*Host, e
 
 	if cfg.EnableWebTransport {
 		opts = append(opts, libp2p.Transport(libp2pwebtransport.New))
-		// Add WebTransport listener address.
-		wtMA, err := multiaddr.NewMultiaddr("/ip4/0.0.0.0/udp/0/quic-v1/webtransport")
-		if err == nil {
-			listenAddrs = append(listenAddrs, wtMA)
-			// Override the listen addrs option to include the WebTransport address.
-			opts[1] = libp2p.ListenAddrs(listenAddrs...)
-		} else {
-			logger.Warn("failed to parse WebTransport listen address", "error", err)
-		}
-		logger.Info("WebTransport enabled")
 	}
 
 	if cfg.EnableRelayClient {

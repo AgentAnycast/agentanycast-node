@@ -77,7 +77,7 @@ func (m *MultiRegistryDiscovery) DiscoverBySkill(ctx context.Context, skillID st
 	wg.Wait()
 
 	// Merge and deduplicate by PeerID.
-	seen := make(map[string]bool)
+	seen := make(map[string]struct{})
 	var merged []AgentEndpoint
 	var lastErr error
 
@@ -88,8 +88,8 @@ func (m *MultiRegistryDiscovery) DiscoverBySkill(ctx context.Context, skillID st
 		}
 		for _, ep := range r.endpoints {
 			key := ep.PeerID.String()
-			if !seen[key] {
-				seen[key] = true
+			if _, exists := seen[key]; !exists {
+				seen[key] = struct{}{}
 				merged = append(merged, ep)
 			}
 		}
@@ -105,14 +105,31 @@ func (m *MultiRegistryDiscovery) DiscoverBySkill(ctx context.Context, skillID st
 }
 
 func (m *MultiRegistryDiscovery) RegisterSkills(ctx context.Context, peerID string, skills []SkillInfo, agentName, agentDesc string) error {
-	// Register with all registries; succeed if at least one accepts.
+	type result struct {
+		err error
+	}
+
+	results := make([]result, len(m.providers))
+	var wg sync.WaitGroup
+	for i, p := range m.providers {
+		wg.Add(1)
+		go func(idx int, prov DiscoveryProvider) {
+			defer wg.Done()
+			err := prov.RegisterSkills(ctx, peerID, skills, agentName, agentDesc)
+			if err != nil {
+				m.logger.Warn("multi-registry: registration failed", "error", err)
+			}
+			results[idx] = result{err: err}
+		}(i, p)
+	}
+	wg.Wait()
+
 	var firstErr error
 	anyOK := false
-	for _, p := range m.providers {
-		if err := p.RegisterSkills(ctx, peerID, skills, agentName, agentDesc); err != nil {
-			m.logger.Warn("multi-registry: registration failed", "error", err)
+	for _, r := range results {
+		if r.err != nil {
 			if firstErr == nil {
-				firstErr = err
+				firstErr = r.err
 			}
 		} else {
 			anyOK = true
@@ -125,12 +142,27 @@ func (m *MultiRegistryDiscovery) RegisterSkills(ctx context.Context, peerID stri
 }
 
 func (m *MultiRegistryDiscovery) UnregisterSkills(ctx context.Context, peerID string, skillIDs []string) error {
+	type result struct {
+		err error
+	}
+
+	results := make([]result, len(m.providers))
+	var wg sync.WaitGroup
+	for i, p := range m.providers {
+		wg.Add(1)
+		go func(idx int, prov DiscoveryProvider) {
+			defer wg.Done()
+			results[idx] = result{err: prov.UnregisterSkills(ctx, peerID, skillIDs)}
+		}(i, p)
+	}
+	wg.Wait()
+
 	var firstErr error
 	anyOK := false
-	for _, p := range m.providers {
-		if err := p.UnregisterSkills(ctx, peerID, skillIDs); err != nil {
+	for _, r := range results {
+		if r.err != nil {
 			if firstErr == nil {
-				firstErr = err
+				firstErr = r.err
 			}
 		} else {
 			anyOK = true

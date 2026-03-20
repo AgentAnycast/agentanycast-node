@@ -50,38 +50,38 @@ type RPCMethod struct {
 
 // RPCParam describes a parameter of an RPC method.
 type RPCParam struct {
-	Name        string      `json:"name"`
-	Description string      `json:"description,omitempty"`
-	Schema      interface{} `json:"schema,omitempty"`
-	Required    bool        `json:"required,omitempty"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Schema      any    `json:"schema,omitempty"`
+	Required    bool   `json:"required,omitempty"`
 }
 
 // RPCResult describes the result of an RPC method.
 type RPCResult struct {
-	Name        string      `json:"name"`
-	Description string      `json:"description,omitempty"`
-	Schema      interface{} `json:"schema,omitempty"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Schema      any    `json:"schema,omitempty"`
 }
 
 // JSONRPCRequest is a JSON-RPC 2.0 request, used for POST /agent/rpc calls.
 type JSONRPCRequest struct {
-	JSONRPC string      `json:"jsonrpc"`
-	Method  string      `json:"method"`
-	Params  interface{} `json:"params,omitempty"`
-	ID      interface{} `json:"id"`
+	JSONRPC string `json:"jsonrpc"`
+	Method  string `json:"method"`
+	Params  any    `json:"params,omitempty"`
+	ID      any    `json:"id"`
 }
 
 // JSONRPCResponse is a JSON-RPC 2.0 response.
 type JSONRPCResponse struct {
 	JSONRPC string        `json:"jsonrpc"`
-	Result  interface{}   `json:"result,omitempty"`
+	Result  any           `json:"result,omitempty"`
 	Error   *JSONRPCError `json:"error,omitempty"`
-	ID      interface{}   `json:"id"`
+	ID      any           `json:"id"`
 }
 
 // JSONRPCError represents a JSON-RPC 2.0 error object.
 type JSONRPCError struct {
-	Code    int         `json:"code"`
-	Message string      `json:"message"`
-	Data    interface{} `json:"data,omitempty"`
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Data    any    `json:"data,omitempty"`
 }

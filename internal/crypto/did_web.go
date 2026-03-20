@@ -7,6 +7,7 @@
 package crypto
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mr-tron/base58"
@@ -25,12 +27,55 @@ var didWebHTTPClient = &http.Client{
 	Timeout: 10 * time.Second,
 }
 
+// didDocCacheTTL is the time-to-live for cached DID documents.
+const didDocCacheTTL = 5 * time.Minute
+
+// didDocCacheInstance is the global DID document cache.
+var didDocCacheInstance = &didDocCache{
+	entries: make(map[string]*cachedDoc),
+}
+
+// didDocCache caches resolved DID documents with a TTL to reduce HTTP requests.
+type didDocCache struct {
+	mu      sync.RWMutex
+	entries map[string]*cachedDoc
+}
+
+// cachedDoc holds a cached DID document and its expiration time.
+type cachedDoc struct {
+	doc       *DIDDocument
+	expiresAt time.Time
+}
+
+// get returns a cached document if it exists and has not expired.
+func (c *didDocCache) get(did string) (*DIDDocument, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	entry, ok := c.entries[did]
+	if !ok || time.Now().After(entry.expiresAt) {
+		return nil, false
+	}
+	return entry.doc, true
+}
+
+// set stores a document in the cache with the configured TTL.
+func (c *didDocCache) set(did string, doc *DIDDocument) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.entries[did] = &cachedDoc{
+		doc:       doc,
+		expiresAt: time.Now().Add(didDocCacheTTL),
+	}
+}
+
 // Errors for did:web operations.
 var (
-	ErrInvalidDIDWeb   = errors.New("invalid did:web format")
-	ErrDIDWebResolve   = errors.New("did:web resolution failed")
-	ErrDIDDocMismatch  = errors.New("DID document ID does not match requested DID")
-	ErrNoEd25519Key    = errors.New("no Ed25519VerificationKey2020 found in DID document")
+	ErrInvalidDIDWeb    = errors.New("invalid did:web format")
+	ErrDIDWebResolve    = errors.New("did:web resolution failed")
+	ErrDIDDocMismatch   = errors.New("DID document ID does not match requested DID")
+	ErrNoEd25519Key     = errors.New("no Ed25519VerificationKey2020 found in DID document")
 	ErrInvalidMultibase = errors.New("invalid multibase-encoded key")
 )
 
@@ -73,7 +118,7 @@ func DIDWebToURL(didWeb string) (string, error) {
 	// URL-decode the domain part (e.g., example.com%3A8443 -> example.com:8443).
 	domain, err := url.PathUnescape(parts[0])
 	if err != nil {
-		return "", fmt.Errorf("%w: invalid domain encoding: %v", ErrInvalidDIDWeb, err)
+		return "", fmt.Errorf("%w: invalid domain encoding: %w", ErrInvalidDIDWeb, err)
 	}
 
 	var path string
@@ -83,7 +128,7 @@ func DIDWebToURL(didWeb string) (string, error) {
 		for i, p := range parts[1:] {
 			decoded, err := url.PathUnescape(p)
 			if err != nil {
-				return "", fmt.Errorf("%w: invalid path encoding: %v", ErrInvalidDIDWeb, err)
+				return "", fmt.Errorf("%w: invalid path encoding: %w", ErrInvalidDIDWeb, err)
 			}
 			decodedParts[i] = decoded
 		}
@@ -101,10 +146,7 @@ func DIDWebToURL(didWeb string) (string, error) {
 // Path segments are joined with ":" separators.
 func GenerateDIDWeb(domain string, path ...string) string {
 	// Percent-encode colons in domain (for port numbers).
-	encoded := url.PathEscape(domain)
-	// url.PathEscape encodes ':' as %3A but also encodes other chars we want to keep.
-	// We only need to handle the colon for port numbers specifically.
-	encoded = strings.ReplaceAll(encoded, ":", "%3A")
+	encoded := strings.Replace(domain, ":", "%3A", 1)
 
 	if len(path) == 0 {
 		return "did:web:" + encoded
@@ -143,13 +185,27 @@ func BuildDIDDocument(didWeb string, pubKeyRaw []byte) *DIDDocument {
 }
 
 // ResolveDIDWeb fetches and parses a DID Document from the did:web URL.
+// Resolved documents are cached for 5 minutes to reduce HTTP requests.
 func ResolveDIDWeb(ctx context.Context, didWeb string) (*DIDDocument, error) {
+	// Check the cache first.
+	if doc, ok := didDocCacheInstance.get(didWeb); ok {
+		return doc, nil
+	}
+
 	resolveURL, err := DIDWebToURL(didWeb)
 	if err != nil {
 		return nil, err
 	}
 
-	return resolveDIDWebFromURL(ctx, didWeb, resolveURL)
+	doc, err := resolveDIDWebFromURL(ctx, didWeb, resolveURL)
+	if err != nil {
+		return nil, err
+	}
+
+	// Cache the successfully resolved document.
+	didDocCacheInstance.set(didWeb, doc)
+
+	return doc, nil
 }
 
 // resolveDIDWebFromURL fetches and validates a DID Document from a given URL.
@@ -157,13 +213,13 @@ func ResolveDIDWeb(ctx context.Context, didWeb string) (*DIDDocument, error) {
 func resolveDIDWebFromURL(ctx context.Context, didWeb, resolveURL string) (*DIDDocument, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, resolveURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("%w: create request: %v", ErrDIDWebResolve, err)
+		return nil, fmt.Errorf("%w: create request: %w", ErrDIDWebResolve, err)
 	}
 	req.Header.Set("Accept", "application/did+ld+json, application/json")
 
 	resp, err := didWebHTTPClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%w: HTTP GET %s: %v", ErrDIDWebResolve, resolveURL, err)
+		return nil, fmt.Errorf("%w: HTTP GET %s: %w", ErrDIDWebResolve, resolveURL, err)
 	}
 	defer resp.Body.Close()
 
@@ -173,12 +229,12 @@ func resolveDIDWebFromURL(ctx context.Context, didWeb, resolveURL string) (*DIDD
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1 MiB limit
 	if err != nil {
-		return nil, fmt.Errorf("%w: read response: %v", ErrDIDWebResolve, err)
+		return nil, fmt.Errorf("%w: read response: %w", ErrDIDWebResolve, err)
 	}
 
 	var doc DIDDocument
 	if err := json.Unmarshal(body, &doc); err != nil {
-		return nil, fmt.Errorf("%w: parse JSON: %v", ErrDIDWebResolve, err)
+		return nil, fmt.Errorf("%w: parse JSON: %w", ErrDIDWebResolve, err)
 	}
 
 	if doc.ID != didWeb {
@@ -202,17 +258,15 @@ func ExtractEd25519Key(doc *DIDDocument) ([]byte, error) {
 
 		decoded, err := base58.Decode(vm.PublicKeyMultibase[1:])
 		if err != nil {
-			return nil, fmt.Errorf("%w: base58 decode: %v", ErrInvalidMultibase, err)
+			return nil, fmt.Errorf("%w: base58 decode: %w", ErrInvalidMultibase, err)
 		}
 
 		// Verify and strip the Ed25519 multicodec prefix (0xed 0x01).
 		if len(decoded) != len(ed25519MulticodecPrefix)+32 {
 			return nil, fmt.Errorf("%w: decoded key has wrong length (got %d, want %d)", ErrInvalidMultibase, len(decoded), len(ed25519MulticodecPrefix)+32)
 		}
-		for i, b := range ed25519MulticodecPrefix {
-			if decoded[i] != b {
-				return nil, fmt.Errorf("%w: unexpected multicodec prefix", ErrInvalidMultibase)
-			}
+		if !bytes.HasPrefix(decoded, ed25519MulticodecPrefix) {
+			return nil, fmt.Errorf("%w: unexpected multicodec prefix", ErrInvalidMultibase)
 		}
 
 		return decoded[len(ed25519MulticodecPrefix):], nil

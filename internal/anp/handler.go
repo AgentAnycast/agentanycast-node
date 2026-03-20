@@ -15,7 +15,7 @@ import (
 // IncomingANPTask represents an ANP JSON-RPC call routed into the A2A engine.
 type IncomingANPTask struct {
 	Method   string
-	Params   interface{}
+	Params   any
 	ResultCh chan<- *JSONRPCResponse
 }
 
@@ -28,15 +28,24 @@ type Handler struct {
 	card     *pb.AgentCard
 	taskChan chan<- IncomingANPTask
 	logger   *slog.Logger
+	mux      *http.ServeMux
 }
 
 // NewHandler creates a new ANP inbound handler.
 func NewHandler(card *pb.AgentCard, taskChan chan<- IncomingANPTask, logger *slog.Logger) *Handler {
-	return &Handler{
+	h := &Handler{
 		card:     card,
 		taskChan: taskChan,
 		logger:   logger,
 	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /agent/ad.json", h.serveDescription)
+	mux.HandleFunc("GET /agent/interface.json", h.serveInterface)
+	mux.HandleFunc("POST /agent/rpc", h.serveRPC)
+	h.mux = mux
+
+	return h
 }
 
 // SetCard updates the agent card used by the handler. Safe to call
@@ -54,28 +63,21 @@ func (h *Handler) getCard() *pb.AgentCard {
 	return h.card
 }
 
-// ServeHTTP routes requests to the appropriate ANP endpoint.
+// ServeHTTP routes requests to the appropriate ANP endpoint via the internal ServeMux.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	switch r.URL.Path {
-	case "/agent/ad.json":
-		h.serveDescription(w, r)
-	case "/agent/interface.json":
-		h.serveInterface(w, r)
-	case "/agent/rpc":
-		h.serveRPC(w, r)
-	default:
-		http.NotFound(w, r)
-	}
+	h.mux.ServeHTTP(w, r)
 }
 
 func (h *Handler) serveDescription(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
+	start := time.Now()
 
 	card := h.getCard()
 	if card == nil {
+		h.logger.Debug("ANP inbound request",
+			"method", "serveDescription",
+			"duration", time.Since(start),
+			"error", "no agent card configured",
+		)
 		http.Error(w, "no agent card configured", http.StatusNotFound)
 		return
 	}
@@ -93,16 +95,24 @@ func (h *Handler) serveDescription(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(desc); err != nil {
 		h.logger.Error("failed to encode agent description", "error", err)
 	}
+
+	h.logger.Debug("ANP inbound request",
+		"method", "serveDescription",
+		"duration", time.Since(start),
+		"status", "ok",
+	)
 }
 
 func (h *Handler) serveInterface(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
+	start := time.Now()
 
 	card := h.getCard()
 	if card == nil {
+		h.logger.Debug("ANP inbound request",
+			"method", "serveInterface",
+			"duration", time.Since(start),
+			"error", "no agent card configured",
+		)
 		http.Error(w, "no agent card configured", http.StatusNotFound)
 		return
 	}
@@ -113,27 +123,45 @@ func (h *Handler) serveInterface(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(spec); err != nil {
 		h.logger.Error("failed to encode OpenRPC spec", "error", err)
 	}
+
+	h.logger.Debug("ANP inbound request",
+		"method", "serveInterface",
+		"duration", time.Since(start),
+		"status", "ok",
+	)
 }
 
 func (h *Handler) serveRPC(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
+	start := time.Now()
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, 16<<20)) // 16MB max
 	if err != nil {
+		h.logger.Warn("ANP inbound RPC failed",
+			"method", "serveRPC",
+			"duration", time.Since(start),
+			"error", "failed to read request body",
+		)
 		h.writeError(w, nil, -32700, "failed to read request body")
 		return
 	}
 
 	var req JSONRPCRequest
 	if err := json.Unmarshal(body, &req); err != nil {
+		h.logger.Warn("ANP inbound RPC failed",
+			"method", "serveRPC",
+			"duration", time.Since(start),
+			"error", "invalid JSON",
+		)
 		h.writeError(w, nil, -32700, "invalid JSON")
 		return
 	}
 
 	if h.taskChan == nil {
+		h.logger.Warn("ANP inbound RPC failed",
+			"rpc_method", req.Method,
+			"duration", time.Since(start),
+			"error", "task handler not configured",
+		)
 		h.writeError(w, req.ID, -32000, "ANP task handler is not configured")
 		return
 	}
@@ -150,6 +178,11 @@ func (h *Handler) serveRPC(w http.ResponseWriter, r *http.Request) {
 		ResultCh: resultCh,
 	}:
 	case <-ctx.Done():
+		h.logger.Warn("ANP inbound RPC failed",
+			"rpc_method", req.Method,
+			"duration", time.Since(start),
+			"error", "task queue full",
+		)
 		h.writeError(w, req.ID, -32000, "server busy: task queue full")
 		return
 	}
@@ -159,6 +192,10 @@ func (h *Handler) serveRPC(w http.ResponseWriter, r *http.Request) {
 	select {
 	case result = <-resultCh:
 	case <-ctx.Done():
+		h.logger.Warn("ANP inbound RPC timed out",
+			"rpc_method", req.Method,
+			"duration", time.Since(start),
+		)
 		h.writeError(w, req.ID, -32000, "request timed out waiting for result")
 		return
 	}
@@ -173,9 +210,16 @@ func (h *Handler) serveRPC(w http.ResponseWriter, r *http.Request) {
 	if _, err := w.Write(respBytes); err != nil {
 		h.logger.Warn("failed to write response", "error", err)
 	}
+
+	hasError := result != nil && result.Error != nil
+	h.logger.Debug("ANP inbound RPC completed",
+		"rpc_method", req.Method,
+		"duration", time.Since(start),
+		"has_error", hasError,
+	)
 }
 
-func (h *Handler) writeError(w http.ResponseWriter, id interface{}, code int, message string) {
+func (h *Handler) writeError(w http.ResponseWriter, id any, code int, message string) {
 	resp := JSONRPCResponse{
 		JSONRPC: "2.0",
 		ID:      id,

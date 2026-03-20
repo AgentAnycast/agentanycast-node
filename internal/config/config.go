@@ -2,6 +2,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -62,6 +63,41 @@ type Config struct {
 
 	// v0.5: Decentralized identity settings
 	Identity IdentityConfig `toml:"identity"`
+}
+
+// Validate checks the configuration for logical errors and returns the first
+// problem found. Call after loading + applying env overrides.
+func (c *Config) Validate() error {
+	if c.StorePath == "" {
+		return errors.New("config: store_path must not be empty")
+	}
+	if c.GRPCListen == "" {
+		return errors.New("config: grpc_listen must not be empty")
+	}
+
+	// Validate DHT mode if set.
+	switch c.Anycast.DHTMode {
+	case "", "auto", "server", "client":
+		// valid
+	default:
+		return fmt.Errorf("config: invalid anycast.dht_mode %q (must be auto, server, or client)", c.Anycast.DHTMode)
+	}
+
+	// When anycast auto-register is enabled, at least one discovery mechanism
+	// must be configured.
+	if c.Anycast.AutoRegister {
+		hasRegistry := c.Anycast.RegistryAddr != "" || len(c.Anycast.RegistryAddrs) > 0
+		if !hasRegistry && !c.Anycast.EnableDHT {
+			return errors.New("config: anycast.auto_register requires at least one of registry_addr/registry_addrs or enable_dht")
+		}
+	}
+
+	// ANP and Bridge listen addresses must not conflict.
+	if c.ANP.Enabled && c.Bridge.Enabled && c.ANP.Listen != "" && c.ANP.Listen == c.Bridge.Listen {
+		return fmt.Errorf("config: anp.listen %q conflicts with bridge.listen (same address)", c.ANP.Listen)
+	}
+
+	return nil
 }
 
 // BridgeConfig holds HTTP Bridge configuration.
@@ -205,20 +241,31 @@ func LoadConfigFile(path string) (*Config, error) {
 	return cfg, nil
 }
 
+// envOverride sets *target to the value of the environment variable key, if set.
+func envOverride(target *string, key string) {
+	if v := os.Getenv(key); v != "" {
+		*target = v
+	}
+}
+
+// envOverrideBool sets *target to true/false based on the environment variable key.
+func envOverrideBool(target *bool, key string) {
+	v := os.Getenv(key)
+	switch v {
+	case "true", "1":
+		*target = true
+	case "false", "0":
+		*target = false
+	}
+}
+
 // ApplyEnv overrides config values from environment variables.
 func (c *Config) ApplyEnv() {
-	if v := os.Getenv("AGENTANYCAST_KEY_PATH"); v != "" {
-		c.KeyPath = v
-	}
-	if v := os.Getenv("AGENTANYCAST_GRPC_LISTEN"); v != "" {
-		c.GRPCListen = v
-	}
-	if v := os.Getenv("AGENTANYCAST_LOG_LEVEL"); v != "" {
-		c.LogLevel = v
-	}
-	if v := os.Getenv("AGENTANYCAST_STORE_PATH"); v != "" {
-		c.StorePath = v
-	}
+	envOverride(&c.KeyPath, "AGENTANYCAST_KEY_PATH")
+	envOverride(&c.GRPCListen, "AGENTANYCAST_GRPC_LISTEN")
+	envOverride(&c.LogLevel, "AGENTANYCAST_LOG_LEVEL")
+	envOverride(&c.StorePath, "AGENTANYCAST_STORE_PATH")
+
 	if v := os.Getenv("AGENTANYCAST_BOOTSTRAP_PEERS"); v != "" {
 		var peers []string
 		for _, p := range strings.Split(v, ",") {
@@ -246,8 +293,18 @@ func (c *Config) ApplyEnv() {
 			c.Anycast.RegistryAddrs = addrs
 		}
 	}
+
+	// MCP settings.
 	if v := os.Getenv("AGENTANYCAST_MCP_LISTEN"); v != "" {
 		c.MCP.Enabled = true
 		c.MCP.Listen = v
 	}
+
+	// ANP settings.
+	envOverride(&c.ANP.Listen, "AGENTANYCAST_ANP_LISTEN")
+	envOverrideBool(&c.ANP.Enabled, "AGENTANYCAST_ANP_ENABLED")
+
+	// Identity settings.
+	envOverride(&c.Identity.DIDWeb, "AGENTANYCAST_DID_WEB")
+	envOverride(&c.Identity.DIDDNSDomain, "AGENTANYCAST_DID_DNS_DOMAIN")
 }

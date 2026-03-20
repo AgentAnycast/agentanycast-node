@@ -8,6 +8,8 @@
 package crypto
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,6 +27,36 @@ var (
 	ErrVCSignatureFailed = errors.New("credential signature verification failed")
 	ErrVCIssuerKey       = errors.New("cannot extract public key from issuer DID")
 )
+
+// DIDResolver resolves a DID to its public key bytes. Implementations handle
+// different DID methods (did:key, did:web, etc.).
+type DIDResolver interface {
+	ResolvePublicKey(ctx context.Context, did string) ([]byte, error)
+}
+
+// DefaultDIDResolver resolves did:key DIDs by extracting the public key from
+// the DID itself. This is the default resolver used when none is provided.
+type DefaultDIDResolver struct{}
+
+// ResolvePublicKey extracts the Ed25519 public key from a did:key DID.
+func (r *DefaultDIDResolver) ResolvePublicKey(_ context.Context, did string) ([]byte, error) {
+	if strings.HasPrefix(did, "did:key:") {
+		pid, err := DIDKeyToPeerID(did)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrVCIssuerKey, err)
+		}
+		pub, err := pid.ExtractPublicKey()
+		if err != nil {
+			return nil, fmt.Errorf("%w: extract public key from PeerID: %w", ErrVCIssuerKey, err)
+		}
+		raw, err := libp2pcrypto.MarshalPublicKey(pub)
+		if err != nil {
+			return nil, fmt.Errorf("%w: marshal public key: %w", ErrVCIssuerKey, err)
+		}
+		return raw, nil
+	}
+	return nil, fmt.Errorf("%w: unsupported DID method for issuer %q (only did:key supported for verification)", ErrVCIssuerKey, did)
+}
 
 // VerifiableCredential represents a W3C Verifiable Credential.
 type VerifiableCredential struct {
@@ -102,16 +134,19 @@ func IssueSkillCredential(privKey libp2pcrypto.PrivKey, issuerDID, subjectDID st
 // It extracts the issuer's public key from the issuer DID (supports did:key),
 // reconstructs the canonical credential payload, and checks the signature.
 //
+// An optional DIDResolver can be provided for pluggable DID resolution. When
+// resolver is nil, DefaultDIDResolver is used (did:key only).
+//
 // Known limitations:
 //   - No expiration checking: credentials without an expirationDate are accepted
 //     indefinitely, and any expirationDate field present in the credential is not validated.
 //   - No revocation support: there is no credential status or revocation list check.
-//   - Only did:key issuers: verification requires the issuer DID to use the did:key method;
-//     did:web and other methods are not supported for signature verification.
+//   - Only did:key issuers (with default resolver): verification requires the issuer DID
+//     to use the did:key method; did:web and other methods require a custom DIDResolver.
 //   - Canonical JSON caveat: the canonicalization uses sorted-key JSON marshaling,
 //     which may not be fully compatible with other VC implementations that use
 //     JSON-LD canonicalization (e.g., URDNA2015).
-func VerifyCredential(vc *VerifiableCredential) error {
+func VerifyCredential(vc *VerifiableCredential, resolver ...DIDResolver) error {
 	if vc.Proof == nil {
 		return ErrVCInvalidProof
 	}
@@ -120,7 +155,7 @@ func VerifyCredential(vc *VerifiableCredential) error {
 	}
 
 	// Extract issuer public key from DID.
-	pubKey, err := resolveIssuerPublicKey(vc.Issuer)
+	pubKey, err := resolveIssuerPublicKey(vc.Issuer, resolver...)
 	if err != nil {
 		return err
 	}
@@ -128,7 +163,7 @@ func VerifyCredential(vc *VerifiableCredential) error {
 	// Decode the proof signature.
 	sig, err := base58.Decode(vc.Proof.ProofValue)
 	if err != nil {
-		return fmt.Errorf("%w: decode proof value: %v", ErrVCInvalidProof, err)
+		return fmt.Errorf("%w: decode proof value: %w", ErrVCInvalidProof, err)
 	}
 
 	// Reconstruct the credential without proof for verification.
@@ -142,7 +177,7 @@ func VerifyCredential(vc *VerifiableCredential) error {
 
 	ok, err := pubKey.Verify(canonical, sig)
 	if err != nil {
-		return fmt.Errorf("%w: verify signature: %v", ErrVCSignatureFailed, err)
+		return fmt.Errorf("%w: verify signature: %w", ErrVCSignatureFailed, err)
 	}
 	if !ok {
 		return ErrVCSignatureFailed
@@ -152,17 +187,31 @@ func VerifyCredential(vc *VerifiableCredential) error {
 }
 
 // resolveIssuerPublicKey extracts the Ed25519 public key from an issuer DID.
-// Currently supports did:key. For did:web, the caller should resolve the DID
-// document separately and use ExtractEd25519Key.
-func resolveIssuerPublicKey(issuerDID string) (libp2pcrypto.PubKey, error) {
+// When a custom DIDResolver is provided, it is used; otherwise the default
+// did:key resolution is performed.
+func resolveIssuerPublicKey(issuerDID string, resolvers ...DIDResolver) (libp2pcrypto.PubKey, error) {
+	// Use custom resolver if provided.
+	if len(resolvers) > 0 && resolvers[0] != nil {
+		raw, err := resolvers[0].ResolvePublicKey(context.Background(), issuerDID)
+		if err != nil {
+			return nil, err
+		}
+		pub, err := libp2pcrypto.UnmarshalPublicKey(raw)
+		if err != nil {
+			return nil, fmt.Errorf("%w: unmarshal resolved public key: %w", ErrVCIssuerKey, err)
+		}
+		return pub, nil
+	}
+
+	// Default: did:key resolution.
 	if strings.HasPrefix(issuerDID, "did:key:") {
 		pid, err := DIDKeyToPeerID(issuerDID)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrVCIssuerKey, err)
+			return nil, fmt.Errorf("%w: %w", ErrVCIssuerKey, err)
 		}
 		pub, err := pid.ExtractPublicKey()
 		if err != nil {
-			return nil, fmt.Errorf("%w: extract public key from PeerID: %v", ErrVCIssuerKey, err)
+			return nil, fmt.Errorf("%w: extract public key from PeerID: %w", ErrVCIssuerKey, err)
 		}
 		return pub, nil
 	}
@@ -223,7 +272,7 @@ type orderedEntry struct {
 }
 
 func (m orderedMap) MarshalJSON() ([]byte, error) {
-	var buf strings.Builder
+	var buf bytes.Buffer
 	buf.WriteByte('{')
 	for i, entry := range m {
 		if i > 0 {
@@ -242,5 +291,5 @@ func (m orderedMap) MarshalJSON() ([]byte, error) {
 		buf.Write(val)
 	}
 	buf.WriteByte('}')
-	return []byte(buf.String()), nil
+	return buf.Bytes(), nil
 }

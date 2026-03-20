@@ -22,11 +22,12 @@ func NewServer(addr string, card *pb.AgentCard, taskChan chan<- IncomingANPTask,
 
 	return &Server{
 		httpServer: &http.Server{
-			Addr:         addr,
-			Handler:      handler,
-			ReadTimeout:  30 * time.Second,
-			WriteTimeout: 60 * time.Second,
-			IdleTimeout:  120 * time.Second,
+			Addr:              addr,
+			Handler:           handler,
+			ReadTimeout:       30 * time.Second,
+			ReadHeaderTimeout: 10 * time.Second,
+			WriteTimeout:      60 * time.Second,
+			IdleTimeout:       120 * time.Second,
 		},
 		handler: handler,
 		logger:  logger,
