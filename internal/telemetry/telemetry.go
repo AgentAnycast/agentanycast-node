@@ -31,6 +31,10 @@ type Config struct {
 	// SampleRate is the fraction of traces to sample (0.0 - 1.0). Default: 1.0.
 	SampleRate float64
 
+	// Insecure controls whether to use plaintext gRPC for the OTLP exporter.
+	// Default: true (most local collectors run without TLS).
+	Insecure bool
+
 	// ServiceName overrides the default service name.
 	ServiceName string
 
@@ -65,10 +69,13 @@ func Setup(ctx context.Context, cfg Config) (ShutdownFunc, error) {
 		cfg.Logger = slog.Default()
 	}
 
-	exporter, err := otlptracegrpc.New(ctx,
+	opts := []otlptracegrpc.Option{
 		otlptracegrpc.WithEndpoint(cfg.OTLPEndpoint),
-		otlptracegrpc.WithInsecure(),
-	)
+	}
+	if cfg.Insecure {
+		opts = append(opts, otlptracegrpc.WithInsecure())
+	}
+	exporter, err := otlptracegrpc.New(ctx, opts...)
 	if err != nil {
 		return nil, err
 	}

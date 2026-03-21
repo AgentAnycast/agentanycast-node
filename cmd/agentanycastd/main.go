@@ -126,6 +126,7 @@ func main() {
 		Enabled:      cfg.Telemetry.Enabled,
 		OTLPEndpoint: cfg.Telemetry.OTLPEndpoint,
 		SampleRate:   cfg.Telemetry.SampleRate,
+		Insecure:     cfg.Telemetry.Insecure,
 		ServiceName:  "agentanycast-node",
 		Version:      version,
 		Logger:       logger,

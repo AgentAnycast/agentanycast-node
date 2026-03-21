@@ -182,6 +182,7 @@ type TelemetryConfig struct {
 	Enabled      bool    `toml:"enabled"`
 	OTLPEndpoint string  `toml:"otlp_endpoint"` // e.g. "localhost:4317"
 	SampleRate   float64 `toml:"sample_rate"`    // 0.0 - 1.0, default 1.0
+	Insecure     bool    `toml:"insecure"`       // use plaintext gRPC (default true for localhost)
 }
 
 // DefaultConfig returns the default daemon configuration.
@@ -227,6 +228,10 @@ func DefaultConfig() *Config {
 		ANP: ANPConfig{
 			Enabled: false,
 			Listen:  ":8090",
+		},
+		Telemetry: TelemetryConfig{
+			SampleRate: 1.0,
+			Insecure:   true,
 		},
 	}
 }
