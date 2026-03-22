@@ -1,42 +1,58 @@
 # AgentAnycast Node
 
-P2P daemon for decentralized A2A agent-to-agent communication.
+**The core daemon powering AgentAnycast's P2P agent network.**
 
+[![CI](https://github.com/AgentAnycast/agentanycast-node/actions/workflows/ci.yml/badge.svg)](https://github.com/AgentAnycast/agentanycast-node/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License](https://img.shields.io/badge/License-FSL--1.1--ALv2-blue)](LICENSE)
 
-> **AgentAnycast is fully decentralized.** On a local network, it works with zero configuration via mDNS auto-discovery. For cross-network communication, just deploy your own relay with a single command.
+AgentAnycast Node (`agentanycastd`) is a sidecar daemon that runs on each machine, providing P2P networking, end-to-end encryption, and A2A protocol routing. Language SDKs (Python, TypeScript) communicate with it over gRPC.
 
-## Overview
+> **Fully decentralized.** On a local network, agents discover each other via mDNS with zero configuration. For cross-network communication, deploy your own relay with a single command.
 
-AgentAnycast Node (`agentanycastd`) is the core daemon that powers the AgentAnycast network. It runs on each machine and handles:
+## Features
 
-- **Connection Layer** — Protocol-neutral Envelope-based message routing with pluggable transport adapters
-- **Multi-Transport** — libp2p (default), NATS, HTTP bridge; select via `--nats-broker` flag
-- **Automatic peer discovery** via mDNS on local networks
-- **NAT traversal** via circuit relay, hole punching, and QUIC
-- **E2E Encryption** — NaCl box (X25519 + XSalsa20-Poly1305) encryption at the Envelope layer, transport-agnostic
-- **A2A task routing** with direct, skill-based, and HTTP bridge addressing
-- **Enterprise Capabilities** — Skill-based ACL, per-peer rate limiting, audit logging (JSON Lines)
-- **Streaming** for chunked artifact delivery
-- **HTTP Bridge** for P2P ↔ HTTP A2A interop
-- **MCP Server** for AI tool integration (Claude, Cursor, ChatGPT, etc.)
-- **MCP Remote Proxy** — `--mcp-proxy "command"` wraps any MCP Server as a P2P-accessible agent
-- **ANP Bridge** for Agent Network Protocol interop
-- **OpenTelemetry** — Distributed tracing with W3C Trace Context propagation, OTLP exporter
-- **Prometheus metrics** for observability
-- **gRPC API** for language SDKs (Python, TypeScript) to interact with the daemon
+| Category | Capabilities |
+|---|---|
+| **Networking** | libp2p (TCP, QUIC, WebTransport), NATS transport, mDNS auto-discovery, NAT traversal (AutoNAT + DCUtR + Circuit Relay v2) |
+| **Security** | E2E NaCl box encryption (X25519 + XSalsa20-Poly1305), W3C DID identity (`did:key`, `did:web`, `did:dns`), skill-based ACL, per-peer rate limiting |
+| **A2A Protocol** | Task state machine, 3 addressing modes (direct / anycast / HTTP bridge), streaming artifacts, offline message queue |
+| **Interop** | HTTP Bridge (P2P ↔ HTTP A2A), ANP Bridge (Agent Network Protocol), MCP Server (stdio + Streamable HTTP) |
+| **Enterprise** | Audit logging (JSON Lines), Prometheus metrics, OpenTelemetry tracing (W3C Trace Context, OTLP) |
+| **AI Tools** | MCP Server for 13+ AI platforms, MCP Remote Proxy to wrap any MCP Server as a P2P agent |
 
 ## Quick Start
 
-### Local network -- zero configuration
+### Standalone -- local network (zero configuration)
 
 ```bash
-# Build
 go build -o agentanycastd ./cmd/agentanycastd
-
-# Run -- agents on the same LAN discover each other automatically
 ./agentanycastd
+# Agents on the same LAN discover each other automatically via mDNS
+```
+
+### With Python SDK
+
+```bash
+pip install agentanycast
+```
+
+```python
+from agentanycast import Node
+
+async with Node(skills=["translate"]) as node:
+    # The daemon starts automatically — no manual setup needed
+    result = await node.send_task("summarize", "Hello world")
+```
+
+### MCP mode -- use as an AI tool
+
+```bash
+# stdio mode (Claude Desktop, Cursor, VS Code, Gemini CLI)
+./agentanycastd -mcp
+
+# Streamable HTTP mode (ChatGPT, remote clients)
+./agentanycastd -mcp-listen :3000
 ```
 
 ### Cross-network -- deploy your own relay
@@ -48,16 +64,6 @@ docker-compose up -d
 
 # Note the RELAY_ADDR from the logs, then:
 ./agentanycastd -bootstrap-peers "/ip4/<RELAY_IP>/tcp/4001/p2p/12D3KooW..."
-```
-
-### MCP mode -- use as an AI tool
-
-```bash
-# stdio mode (Claude Desktop, Cursor, VS Code, Gemini CLI)
-./agentanycastd -mcp
-
-# Streamable HTTP mode (ChatGPT, remote clients)
-./agentanycastd -mcp-listen :3000
 ```
 
 ## Configuration
@@ -76,9 +82,9 @@ docker-compose up -d
 | `-enable-webtransport` | Enable WebTransport (QUIC-based, browser-compatible) |
 | `-mcp` | Run as MCP server over stdio |
 | `-mcp-listen` | MCP Streamable HTTP listen address (e.g., `:3000`) |
+| `-mcp-proxy` | Wrap an MCP Server command as a P2P-accessible agent |
 | `-anp-listen` | ANP bridge listen address (e.g., `:8090`) |
 | `-nats-broker` | NATS broker URL (e.g., `nats://broker.example.com:4222`) |
-| `-mcp-proxy` | Wrap an MCP Server command as a P2P-accessible agent |
 | `-otlp-endpoint` | OTLP collector endpoint for distributed tracing |
 | `-metrics-listen` | Prometheus metrics listen address (e.g., `:9090`) |
 | `-config` | Path to TOML config file |
@@ -86,16 +92,16 @@ docker-compose up -d
 
 ### Environment Variables
 
-| Variable | Description | Default |
-|---|---|---|
-| `AGENTANYCAST_KEY_PATH` | Path to the libp2p identity key file | `~/.agentanycast/key` |
-| `AGENTANYCAST_GRPC_LISTEN` | gRPC server listen address | `unix://~/.agentanycast/daemon.sock` |
-| `AGENTANYCAST_LOG_LEVEL` | Log level | `info` |
-| `AGENTANYCAST_STORE_PATH` | Path to persistent data store | `~/.agentanycast/data` |
-| `AGENTANYCAST_BOOTSTRAP_PEERS` | Comma-separated relay/bootstrap multiaddrs | (none) |
-| `AGENTANYCAST_ENABLE_MDNS` | Enable mDNS local network discovery | `true` |
-| `AGENTANYCAST_REGISTRY_ADDRS` | Comma-separated registry addresses (multi-relay federation) | (none) |
-| `AGENTANYCAST_MCP_LISTEN` | MCP Streamable HTTP address | (none) |
+| Variable | Default |
+|---|---|
+| `AGENTANYCAST_KEY_PATH` | `~/.agentanycast/key` |
+| `AGENTANYCAST_GRPC_LISTEN` | `unix://~/.agentanycast/daemon.sock` |
+| `AGENTANYCAST_LOG_LEVEL` | `info` |
+| `AGENTANYCAST_STORE_PATH` | `~/.agentanycast/data` |
+| `AGENTANYCAST_BOOTSTRAP_PEERS` | (none) |
+| `AGENTANYCAST_ENABLE_MDNS` | `true` |
+| `AGENTANYCAST_REGISTRY_ADDRS` | (none) |
+| `AGENTANYCAST_MCP_LISTEN` | (none) |
 
 ### Config File
 
@@ -209,25 +215,25 @@ otlp_endpoint = "localhost:4317"
 
 | Package | Responsibility |
 |---|---|
-| `internal/a2a/` | A2A protocol engine — task state machine, envelope routing, offline queue, streaming |
-| `internal/node/` | libp2p host — peer connections, mDNS, DHT, TCP/QUIC/WebTransport |
-| `internal/crypto/` | Ed25519 key management, DID conversion (did:key, did:web, did:dns), Verifiable Credentials |
-| `internal/nat/` | AutoNAT detection, DCUtR hole punching, Circuit Relay v2 client |
-| `internal/store/` | BoltDB persistence — tasks, agent cards, offline message queue |
-| `internal/config/` | Configuration — TOML file, environment variables, CLI flags |
-| `internal/bridge/` | HTTP Bridge — translates HTTP JSON-RPC ↔ P2P A2A envelopes |
-| `internal/anycast/` | Anycast router — skill-based addressing, registry + multi-registry federation + DHT discovery |
-| `internal/envelope/` | Envelope layer — protocol-neutral message routing, E2E NaCl box encryption |
-| `internal/transport/` | Pluggable transport adapters — libp2p, NATS, HTTP bridge |
-| `internal/metrics/` | Prometheus metrics — connections, tasks, routing, bridge, streaming, MCP |
-| `internal/mcp/` | MCP Server — exposes P2P capabilities as MCP tools (stdio + Streamable HTTP) |
-| `internal/mcpproxy/` | MCP Remote Proxy — wraps external MCP Server commands as P2P agents |
-| `internal/anp/` | ANP Bridge — translates ANP HTTP ↔ A2A P2P (JSON-RPC 2.0 + JSON-LD) |
-| `internal/policy/` | Enterprise policy — skill-based ACL, per-peer rate limiting, audit logging |
-| `internal/otel/` | OpenTelemetry — distributed tracing, W3C Trace Context, OTLP exporter |
-| `pkg/grpcserver/` | gRPC server — 16 RPC methods for SDKs |
+| `internal/a2a/` | A2A protocol engine -- task state machine, envelope routing, offline queue, streaming |
+| `internal/node/` | libp2p host -- peer connections, mDNS, DHT, TCP/QUIC/WebTransport |
+| `internal/crypto/` | Ed25519 keys, DID conversion (`did:key`, `did:web`, `did:dns`), Verifiable Credentials |
+| `internal/nat/` | AutoNAT, DCUtR hole punching, Circuit Relay v2 client |
+| `internal/store/` | BoltDB persistence -- tasks, agent cards, offline queue |
+| `internal/config/` | TOML config, environment variables, CLI flags |
+| `internal/envelope/` | Protocol-neutral message routing, E2E NaCl box encryption |
+| `internal/transport/` | Pluggable transport adapters -- libp2p, NATS, HTTP bridge |
+| `internal/bridge/` | HTTP Bridge -- translates HTTP JSON-RPC ↔ P2P A2A envelopes |
+| `internal/anycast/` | Anycast router -- skill-based addressing, multi-registry federation, DHT discovery |
+| `internal/mcp/` | MCP Server -- P2P capabilities as MCP tools (stdio + Streamable HTTP) |
+| `internal/mcpproxy/` | MCP Remote Proxy -- wraps external MCP commands as P2P agents |
+| `internal/anp/` | ANP Bridge -- translates ANP HTTP ↔ A2A P2P (JSON-RPC 2.0 + JSON-LD) |
+| `internal/policy/` | Enterprise policy -- skill-based ACL, per-peer rate limiting, audit logging |
+| `internal/metrics/` | Prometheus metrics -- connections, tasks, routing, bridge, streaming, MCP |
+| `internal/otel/` | OpenTelemetry -- distributed tracing, W3C Trace Context, OTLP exporter |
+| `pkg/grpcserver/` | gRPC server -- 16 RPC methods for SDKs |
 
-### gRPC API (16 RPCs)
+## gRPC API
 
 | Group | Methods |
 |---|---|
@@ -238,9 +244,9 @@ otlp_endpoint = "localhost:4317"
 | **Streaming** | `SubscribeTaskStream`, `SendStreamingArtifact` |
 | **Discovery** | `Discover` |
 
-### MCP Server
+## MCP Server
 
-The daemon can run as an MCP (Model Context Protocol) server, exposing P2P capabilities as tools for AI assistants:
+The daemon can run as an MCP (Model Context Protocol) server, exposing P2P capabilities as tools for AI assistants.
 
 | Tool | Description |
 |---|---|
@@ -252,61 +258,75 @@ The daemon can run as an MCP (Model Context Protocol) server, exposing P2P capab
 | `toolSendTaskBySkill` | Send task by skill (anycast) |
 | `toolGetTaskStatus` | Get task status |
 
-Two transport modes:
-- **stdio** — for local AI tool integration (Claude Desktop, Cursor, VS Code, Gemini CLI, JetBrains)
-- **Streamable HTTP** — for remote clients (ChatGPT)
+**Transport modes:**
+- **stdio** -- for local AI tool integration (Claude Desktop, Cursor, VS Code, Gemini CLI, JetBrains)
+- **Streamable HTTP** -- for remote clients (ChatGPT)
 
 ### MCP Remote Proxy
 
 Wrap any MCP Server as a P2P-accessible agent with a single flag:
 
 ```bash
-# Make a local MCP server discoverable over the P2P network
 ./agentanycastd --mcp-proxy "npx -y @modelcontextprotocol/server-filesystem /home/user"
 ```
 
 The proxy auto-generates an Agent Card from the MCP server's tool list, registers skills with the relay, and bridges incoming A2A tasks to MCP tool calls.
 
-### HTTP Bridge
+## HTTP Bridge
 
 Exposes an A2A-compatible HTTP endpoint for P2P ↔ HTTP interop:
 
-- `GET /.well-known/a2a-agent-card` — Agent Card discovery
-- `POST /` — JSON-RPC endpoint for task operations
+- `GET /.well-known/a2a-agent-card` -- Agent Card discovery
+- `POST /` -- JSON-RPC endpoint for task operations
 - Optional TLS and CORS support
 
-### ANP Bridge
+## ANP Bridge
 
 Exposes an ANP-compatible HTTP endpoint for Agent Network Protocol interop:
 
-- `GET /agent/ad.json` — Agent Description (JSON-LD)
-- `GET /agent/interface.json` — OpenRPC specification
-- `POST /agent/rpc` — JSON-RPC 2.0 endpoint
+- `GET /agent/ad.json` -- Agent Description (JSON-LD)
+- `GET /agent/interface.json` -- OpenRPC specification
+- `POST /agent/rpc` -- JSON-RPC 2.0 endpoint
 
-### Metrics
+## Observability
 
-Prometheus metrics on configurable HTTP port (default `:9090`):
+### Prometheus Metrics
 
-- `agentanycast_connected_peers` — current peer count (gauge)
-- `agentanycast_connections_total` — connection events by direction (counter)
-- `agentanycast_connections_by_transport` — connections by transport type: tcp/quic/webtransport (counter)
-- `agentanycast_tasks_total` — tasks by direction and status (counter)
-- `agentanycast_task_duration_seconds` — task latency histogram
-- `agentanycast_route_resolutions_total` — anycast resolution by result (counter)
-- `agentanycast_bridge_requests_total` — HTTP bridge requests (counter)
-- `agentanycast_stream_chunks_total` — streaming chunks by direction (counter)
-- `agentanycast_messages_total` — A2A messages by envelope type (counter)
-- `agentanycast_offline_queue_size` — queued offline messages (gauge)
-- `agentanycast_mcp_tool_calls_total` — MCP tool calls by tool and status (counter)
-- `agentanycast_acl_decisions_total` — ACL allow/deny decisions (counter)
-- `agentanycast_rate_limit_rejections_total` — rate-limited requests (counter)
+Available on a configurable HTTP port (default `:9090`):
+
+| Metric | Type | Description |
+|---|---|---|
+| `agentanycast_connected_peers` | Gauge | Current peer count |
+| `agentanycast_connections_total` | Counter | Connection events by direction |
+| `agentanycast_connections_by_transport` | Counter | Connections by transport (tcp/quic/webtransport) |
+| `agentanycast_tasks_total` | Counter | Tasks by direction and status |
+| `agentanycast_task_duration_seconds` | Histogram | Task latency |
+| `agentanycast_route_resolutions_total` | Counter | Anycast resolution by result |
+| `agentanycast_bridge_requests_total` | Counter | HTTP bridge requests |
+| `agentanycast_stream_chunks_total` | Counter | Streaming chunks by direction |
+| `agentanycast_messages_total` | Counter | A2A messages by envelope type |
+| `agentanycast_offline_queue_size` | Gauge | Queued offline messages |
+| `agentanycast_mcp_tool_calls_total` | Counter | MCP tool calls by tool and status |
+| `agentanycast_acl_decisions_total` | Counter | ACL allow/deny decisions |
+| `agentanycast_rate_limit_rejections_total` | Counter | Rate-limited requests |
 
 ### OpenTelemetry
 
-Distributed tracing with W3C Trace Context propagation. Spans cover task lifecycle, transport hops, and envelope encryption. Configure with:
+Distributed tracing with W3C Trace Context propagation. Spans cover task lifecycle, transport hops, and envelope encryption.
 
 ```bash
 ./agentanycastd --otlp-endpoint localhost:4317
+```
+
+## Building
+
+```bash
+make build              # Build agentanycastd binary -> bin/
+make test               # Run all tests (unit + integration, -race)
+make test-unit          # Unit tests only (-short)
+make test-integration   # Integration tests only
+make lint               # golangci-lint
+make cross-compile      # Build for darwin/linux x amd64/arm64 + windows/amd64
 ```
 
 ## Disclaimer
