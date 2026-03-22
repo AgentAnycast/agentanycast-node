@@ -1,14 +1,21 @@
 package a2a
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"log/slog"
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/agentanycast/agentanycast-node/internal/store"
 )
+
+var offlineTracer = otel.Tracer("agentanycast/a2a/offline")
 
 // OfflineQueue manages queuing and flushing of messages that could not be
 // delivered because the target peer was disconnected. Messages are persisted
@@ -35,6 +42,14 @@ func NewOfflineQueue(s *store.Store, logger *slog.Logger, ttl time.Duration) *Of
 // Enqueue persists a message for later delivery to a disconnected peer.
 // The message is prefixed with the current timestamp for TTL enforcement.
 func (q *OfflineQueue) Enqueue(peerID, envelopeID string, data []byte) error {
+	_, span := offlineTracer.Start(context.Background(), "a2a.offline.enqueue",
+		trace.WithAttributes(
+			attribute.String("peer_id", peerID),
+			attribute.String("envelope_id", envelopeID),
+		),
+	)
+	defer span.End()
+
 	key := peerID + "/" + envelopeID
 	stamped := q.stampData(data)
 	if err := q.store.EnqueueMessage(key, stamped); err != nil {
@@ -52,6 +67,11 @@ func (q *OfflineQueue) Enqueue(peerID, envelopeID string, data []byte) error {
 // Expired messages are silently removed. Messages that fail to send remain
 // in the queue for a future retry.
 func (q *OfflineQueue) FlushQueue(peerID string, sendFn func(data []byte) error) error {
+	_, span := offlineTracer.Start(context.Background(), "a2a.offline.flush",
+		trace.WithAttributes(attribute.String("peer_id", peerID)),
+	)
+	defer span.End()
+
 	all, err := q.store.ListQueuedMessages()
 	if err != nil {
 		return fmt.Errorf("list queued messages: %w", err)

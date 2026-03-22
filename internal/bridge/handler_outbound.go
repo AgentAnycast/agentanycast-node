@@ -11,10 +11,15 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pb "github.com/agentanycast/agentanycast-proto/gen/go/agentanycast/v1"
 )
+
+var bridgeOutboundTracer = otel.Tracer("agentanycast/bridge/outbound")
 
 // OutboundClient sends A2A tasks to external HTTP A2A agents.
 type OutboundClient struct {
@@ -34,6 +39,11 @@ func NewOutboundClient(logger *slog.Logger) *OutboundClient {
 
 // SendTask sends an A2A task to an external HTTP agent at the given URL.
 func (c *OutboundClient) SendTask(ctx context.Context, targetURL string, msg *pb.Message, metadata map[string]string) (*pb.Task, error) {
+	ctx, span := bridgeOutboundTracer.Start(ctx, "bridge.outbound",
+		trace.WithAttributes(attribute.String("target_url", targetURL)),
+	)
+	defer span.End()
+
 	taskID := uuid.New().String()
 
 	reqBody, err := BuildA2AHTTPRequest(taskID, msg)

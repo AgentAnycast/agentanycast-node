@@ -7,10 +7,15 @@ import (
 	"net/http"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pb "github.com/agentanycast/agentanycast-proto/gen/go/agentanycast/v1"
 )
+
+var bridgeInboundTracer = otel.Tracer("agentanycast/bridge/inbound")
 
 // TaskSender is the interface for sending tasks into the local A2A engine.
 type TaskSender interface {
@@ -39,6 +44,14 @@ func (h *InboundHandler) SetSender(sender TaskSender) {
 
 // ServeHTTP handles A2A JSON-RPC requests from HTTP agents.
 func (h *InboundHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	_, span := bridgeInboundTracer.Start(r.Context(), "bridge.inbound",
+		trace.WithAttributes(
+			attribute.String("http.method", r.Method),
+			attribute.String("http.path", r.URL.Path),
+		),
+	)
+	defer span.End()
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return

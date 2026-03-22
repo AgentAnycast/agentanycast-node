@@ -19,10 +19,15 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 
 	"github.com/agentanycast/agentanycast-node/internal/a2a"
+	a2aadapter "github.com/agentanycast/agentanycast-node/internal/adapter/a2a"
+	anpadapter "github.com/agentanycast/agentanycast-node/internal/adapter/anp"
+	httpadapter "github.com/agentanycast/agentanycast-node/internal/adapter/http"
+	libp2padapter "github.com/agentanycast/agentanycast-node/internal/adapter/libp2p"
 	"github.com/agentanycast/agentanycast-node/internal/anp"
 	"github.com/agentanycast/agentanycast-node/internal/anycast"
 	"github.com/agentanycast/agentanycast-node/internal/bridge"
 	"github.com/agentanycast/agentanycast-node/internal/config"
+	"github.com/agentanycast/agentanycast-node/internal/core"
 	"github.com/agentanycast/agentanycast-node/internal/crypto"
 	agentmcp "github.com/agentanycast/agentanycast-node/internal/mcp"
 	"github.com/agentanycast/agentanycast-node/internal/metrics"
@@ -403,6 +408,22 @@ func main() {
 		StreamManager:  streamMgr,
 		CardProvider:   grpcSrv.GetLocalCardBytes,
 	})
+
+	// ── v0.7: Connection Core (pluggable adapter architecture) ───
+	connectionCore := core.New(core.Config{Logger: logger})
+
+	// Register protocol adapters — wrap existing engines.
+	a2aAdapter := a2aadapter.New()
+	connectionCore.RegisterProtocol(a2aAdapter)
+	connectionCore.RegisterProtocol(anpadapter.New())
+
+	// Register transport adapters — wrap existing networking layers.
+	connectionCore.RegisterTransport(libp2padapter.New(h, a2aAdapter, logger))
+	if outboundBridge != nil {
+		connectionCore.RegisterTransport(httpadapter.New(nil)) // HTTP bridge uses existing outbound client
+	}
+
+	_ = connectionCore // Connection Core available for new features (MCP Proxy, etc.)
 
 	// ── Print Startup Info ───────────────────────────────────
 	logger.Info("agentanycastd started",
