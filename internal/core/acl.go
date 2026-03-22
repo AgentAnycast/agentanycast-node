@@ -88,6 +88,9 @@ func matchGlob(pattern, value string) bool {
 		prefix := strings.TrimSuffix(pattern, "*")
 		return strings.HasPrefix(value, prefix)
 	}
-	matched, _ := filepath.Match(pattern, value)
+	matched, err := filepath.Match(pattern, value)
+	if err != nil {
+		return false // Invalid pattern never matches.
+	}
 	return matched
 }

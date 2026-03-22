@@ -10,12 +10,15 @@ package core
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"sync"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/agentanycast/agentanycast-node/internal/adapter"
@@ -35,6 +38,9 @@ type Core struct {
 	acl       *ACLManager
 	rateLimit *RateLimiter
 	audit     *AuditLogger
+
+	// E2E encryption key (v0.8).
+	localPrivateKey ed25519.PrivateKey
 }
 
 // Config holds configuration for the Connection Core.
@@ -110,6 +116,7 @@ func (c *Core) Send(ctx context.Context, env *envelope.Envelope) error {
 			span.SetAttributes(attribute.String("transport", t.Name()))
 			if err := t.Send(ctx, env.Target, env); err != nil {
 				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
 				return fmt.Errorf("core: send via %s: %w", t.Name(), err)
 			}
 			return nil
@@ -118,7 +125,15 @@ func (c *Core) Send(ctx context.Context, env *envelope.Envelope) error {
 
 	err := fmt.Errorf("core: no transport matches target %q", env.Target)
 	span.RecordError(err)
+	span.SetStatus(codes.Error, err.Error())
 	return err
+}
+
+// SetEncryptionKey sets the local Ed25519 private key for E2E encryption.
+// When set, Route() will encrypt envelope payloads for recipients that
+// provide their public key via the "recipient_pubkey" metadata field.
+func (c *Core) SetEncryptionKey(priv ed25519.PrivateKey) {
+	c.localPrivateKey = priv
 }
 
 // SetACLManager configures the ACL manager for access control enforcement.
@@ -167,6 +182,7 @@ func (c *Core) Route(ctx context.Context, env *envelope.Envelope) error {
 				})
 			}
 			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			return err
 		}
 	}
@@ -185,6 +201,7 @@ func (c *Core) Route(ctx context.Context, env *envelope.Envelope) error {
 				})
 			}
 			span.RecordError(rateLimitErr)
+			span.SetStatus(codes.Error, rateLimitErr.Error())
 			return rateLimitErr
 		}
 	}
@@ -198,6 +215,23 @@ func (c *Core) Route(ctx context.Context, env *envelope.Envelope) error {
 			Action: "allow",
 			EnvID:  env.ID,
 		})
+	}
+
+	// 3.5. E2E encryption (if keys available and envelope has recipient pubkey).
+	if c.localPrivateKey != nil {
+		if recipientPubKeyHex := env.Meta("recipient_pubkey"); recipientPubKeyHex != "" {
+			recipientPubKey, err := hex.DecodeString(recipientPubKeyHex)
+			if err == nil && len(recipientPubKey) == ed25519.PublicKeySize {
+				encrypted, err := EncryptPayload(env.Payload, c.localPrivateKey, ed25519.PublicKey(recipientPubKey))
+				if err != nil {
+					span.RecordError(err)
+					span.SetStatus(codes.Error, err.Error())
+					return fmt.Errorf("core: encrypt payload: %w", err)
+				}
+				env.Payload = encrypted
+				env.SetMeta("encrypted", "nacl-box")
+			}
+		}
 	}
 
 	// 4. Dispatch via Send.

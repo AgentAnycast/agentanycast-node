@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,21 @@ import (
 	"github.com/agentanycast/agentanycast-node/internal/config"
 	"github.com/agentanycast/agentanycast-node/internal/envelope"
 )
+
+// validSubjectRe validates NATS subject characters (alphanumeric, dots, underscores, hyphens).
+var validSubjectRe = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+
+// validateNATSSubject checks that a subject string is non-empty and contains
+// only valid characters for NATS subjects.
+func validateNATSSubject(subject string) error {
+	if subject == "" {
+		return fmt.Errorf("nats: empty subject")
+	}
+	if !validSubjectRe.MatchString(subject) {
+		return fmt.Errorf("nats: invalid subject %q (must be alphanumeric, dots, underscores, hyphens)", subject)
+	}
+	return nil
+}
 
 // Transport implements adapter.TransportAdapter using NATS as the
 // message bus. It subscribes to a per-agent subject and publishes
@@ -75,6 +91,10 @@ func New(ctx context.Context, cfg config.NATSConfig, localID string, protocol ad
 
 	// Subscribe to this agent's subject: prefix + localID.
 	subject := cfg.SubjectPrefix + localID
+	if err := validateNATSSubject(subject); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("nats: invalid subscription subject: %w", err)
+	}
 	sub, err := conn.Subscribe(subject, t.handleMessage)
 	if err != nil {
 		conn.Close()
@@ -93,8 +113,8 @@ func (t *Transport) Name() string { return "nats" }
 // must be in the form "nats://<subject>".
 func (t *Transport) Send(ctx context.Context, target string, env *envelope.Envelope) error {
 	subject := strings.TrimPrefix(target, "nats://")
-	if subject == "" {
-		return fmt.Errorf("nats: empty subject in target %q", target)
+	if err := validateNATSSubject(subject); err != nil {
+		return fmt.Errorf("nats: invalid target subject: %w", err)
 	}
 
 	data, err := t.protocol.Emit(ctx, env)
@@ -144,7 +164,10 @@ func (t *Transport) Close() error {
 // bytes into an Envelope via the protocol adapter and delivers it to
 // the inbound channel.
 func (t *Transport) handleMessage(msg *natsgo.Msg) {
-	env, err := t.protocol.Ingest(context.Background(), msg.Data, map[string]string{
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	env, err := t.protocol.Ingest(ctx, msg.Data, map[string]string{
 		"transport":    "nats",
 		"nats.subject": msg.Subject,
 	})

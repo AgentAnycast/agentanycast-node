@@ -28,7 +28,9 @@ import (
 	"github.com/agentanycast/agentanycast-node/internal/a2a"
 	"github.com/agentanycast/agentanycast-node/internal/anycast"
 	"github.com/agentanycast/agentanycast-node/internal/bridge"
+	"github.com/agentanycast/agentanycast-node/internal/core"
 	agentcrypto "github.com/agentanycast/agentanycast-node/internal/crypto"
+	"github.com/agentanycast/agentanycast-node/internal/envelope"
 	"github.com/agentanycast/agentanycast-node/internal/metrics"
 	"github.com/agentanycast/agentanycast-node/internal/node"
 	"github.com/agentanycast/agentanycast-node/internal/store"
@@ -59,6 +61,9 @@ type Server struct {
 	// v0.7: MCP Proxy handler for auto-processing incoming tasks.
 	mcpProxyHandler MCPProxyHandler
 	mcpProxySkills  map[string]bool // skill IDs managed by the proxy
+
+	// v0.8: Connection Core for multi-transport routing with ACL, rate limiting, audit.
+	connectionCore *core.Core
 }
 
 // MCPProxyHandler is called when an incoming task targets a skill managed
@@ -103,6 +108,13 @@ func New(cfg Config) *Server {
 	}
 
 	return s
+}
+
+// SetConnectionCore configures the Connection Core for multi-transport routing.
+// When set, SendTask uses Core.Route() for targets matching registered transports
+// (e.g., NATS, HTTP), applying ACL, rate limiting, and audit logging automatically.
+func (s *Server) SetConnectionCore(c *core.Core) {
+	s.connectionCore = c
 }
 
 // ListenAndServe starts the gRPC server on the given address.
@@ -480,6 +492,14 @@ func (s *Server) SendTask(ctx context.Context, req *pb.SendTaskRequest) (*pb.Sen
 		return nil, status.Error(codes.InvalidArgument, "message is required")
 	}
 
+	// v0.8: Try Connection Core routing for targets that match registered transports.
+	// This applies ACL, rate limiting, and audit logging automatically.
+	if s.connectionCore != nil {
+		if target, ok := s.resolveConnectionCoreTarget(req); ok {
+			return s.sendTaskViaConnectionCore(ctx, target, req.Message, req.Metadata)
+		}
+	}
+
 	switch target := req.Target.(type) {
 	case *pb.SendTaskRequest_PeerId:
 		return s.sendTaskToPeer(ctx, target.PeerId, req.Message, req.Metadata)
@@ -493,6 +513,60 @@ func (s *Server) SendTask(ctx context.Context, req *pb.SendTaskRequest) (*pb.Sen
 	default:
 		return nil, status.Error(codes.InvalidArgument, "target (peer_id, skill_id, or url) is required")
 	}
+}
+
+// resolveConnectionCoreTarget checks whether the request target matches a
+// Connection Core transport (e.g., nats://, http://, https://). Returns the
+// target string and true if Connection Core should handle the request.
+func (s *Server) resolveConnectionCoreTarget(req *pb.SendTaskRequest) (string, bool) {
+	switch target := req.Target.(type) {
+	case *pb.SendTaskRequest_PeerId:
+		// PeerIDs are routed via Connection Core — it has a libp2p transport.
+		return target.PeerId, true
+	case *pb.SendTaskRequest_Url:
+		// HTTP/HTTPS URLs are handled by Connection Core's HTTP transport.
+		if strings.HasPrefix(target.Url, "http://") || strings.HasPrefix(target.Url, "https://") ||
+			strings.HasPrefix(target.Url, "nats://") {
+			return target.Url, true
+		}
+	}
+	return "", false
+}
+
+// sendTaskViaConnectionCore routes a task through the Connection Core, which
+// applies ACL enforcement, rate limiting, and audit logging before dispatching
+// via the matching transport adapter.
+func (s *Server) sendTaskViaConnectionCore(ctx context.Context, target string, msg *pb.Message, metadata map[string]string) (*pb.SendTaskResponse, error) {
+	start := time.Now()
+
+	// Serialize the message as the envelope payload.
+	payload, err := proto.Marshal(msg)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "marshal message: %v", err)
+	}
+
+	env := envelope.New(envelope.TypeTask, target, payload)
+	didKey, _ := agentcrypto.PeerIDToDIDKey(s.host.ID())
+	env.Source = envelope.AgentIdentity{
+		PeerID: s.host.ID().String(),
+		DIDKey: didKey,
+	}
+	for k, v := range metadata {
+		env.SetMeta(k, v)
+	}
+
+	if err := s.connectionCore.Route(ctx, env); err != nil {
+		metrics.TasksTotal.WithLabelValues("sent", "error").Inc()
+		return nil, status.Errorf(codes.Internal, "connection core route: %v", err)
+	}
+
+	metrics.TasksTotal.WithLabelValues("sent", "submitted").Inc()
+	metrics.TaskDuration.WithLabelValues("sent").Observe(time.Since(start).Seconds())
+
+	// Create a local task record for tracking.
+	task := s.engine.CreateTask("", "", s.host.ID().String())
+
+	return &pb.SendTaskResponse{Task: taskToProto(task, msg)}, nil
 }
 
 // sendTaskToPeer sends a task directly to a known PeerID.

@@ -77,6 +77,11 @@ func TestNATSSendReceive(t *testing.T) {
 	trA := newTestTransport(t, brokerURL, "peerA")
 	trB := newTestTransport(t, brokerURL, "peerB")
 
+	// Flush to ensure subscription is propagated to the server before sending.
+	if err := trB.conn.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
 	chB, err := trB.Subscribe(context.Background())
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)

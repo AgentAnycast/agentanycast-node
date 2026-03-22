@@ -419,6 +419,11 @@ func main() {
 	// ── v0.7: Connection Core (pluggable adapter architecture) ───
 	connectionCore := core.New(core.Config{Logger: logger})
 
+	// Wire E2E encryption key from the libp2p host key.
+	if rawPriv, err := privKey.Raw(); err == nil {
+		connectionCore.SetEncryptionKey(rawPriv)
+	}
+
 	// Register protocol adapters — wrap existing engines.
 	a2aAdapter := a2aadapter.New()
 	connectionCore.RegisterProtocol(a2aAdapter)
@@ -460,6 +465,7 @@ func main() {
 	if cfg.Policy.RateLimits.DefaultRPS > 0 {
 		rl := core.NewRateLimiter(cfg.Policy.RateLimits, logger)
 		connectionCore.SetRateLimiter(rl)
+		defer rl.Stop()
 		logger.Info("rate limiter configured", "default_rps", cfg.Policy.RateLimits.DefaultRPS)
 	}
 	if cfg.Policy.AuditLogPath != "" {
@@ -473,7 +479,7 @@ func main() {
 		logger.Info("audit logger configured", "path", cfg.Policy.AuditLogPath)
 	}
 
-	_ = connectionCore // Connection Core with transports, ACL, rate limiting, audit
+	grpcSrv.SetConnectionCore(connectionCore)
 
 	// ── v0.7 Phase B: MCP Remote Proxy ───────────────────────
 	var mcpProxyInstance *mcpproxy.Proxy
