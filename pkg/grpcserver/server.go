@@ -4,6 +4,7 @@ package grpcserver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -54,7 +55,16 @@ type Server struct {
 	// Channel for incoming task subscribers
 	incomingTaskSubs []chan *a2a.IncomingTaskEvent
 	subsMu           sync.Mutex
+
+	// v0.7: MCP Proxy handler for auto-processing incoming tasks.
+	mcpProxyHandler MCPProxyHandler
+	mcpProxySkills  map[string]bool // skill IDs managed by the proxy
 }
+
+// MCPProxyHandler is called when an incoming task targets a skill managed
+// by the MCP proxy. It receives the skill/tool name and the JSON arguments,
+// and returns the JSON result from the MCP tool call.
+type MCPProxyHandler func(ctx context.Context, skillID string, input json.RawMessage) (json.RawMessage, error)
 
 // Config holds configuration for the gRPC server.
 type Config struct {
@@ -159,7 +169,46 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 	return srv.Serve(lis)
 }
 
+// RegisterMCPProxyHandler registers a handler for incoming tasks that target
+// skills managed by the MCP Remote Proxy. When an incoming task's skill ID
+// matches one of the registered proxy skills, the handler is invoked automatically
+// instead of forwarding the task to SDK subscribers.
+func (s *Server) RegisterMCPProxyHandler(handler MCPProxyHandler, skillIDs []string) {
+	s.mcpProxyHandler = handler
+	s.mcpProxySkills = make(map[string]bool, len(skillIDs))
+	for _, id := range skillIDs {
+		s.mcpProxySkills[id] = true
+	}
+	s.logger.Info("MCP proxy handler registered", "skills", len(skillIDs))
+}
+
+// RegisterProxySkill adds a single skill ID to the local agent card.
+func (s *Server) RegisterProxySkill(skill *pb.Skill) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.card == nil {
+		s.card = &pb.AgentCard{
+			Name:            "MCP Proxy Agent",
+			Description:     "Auto-generated agent card for MCP proxy",
+			Version:         "0.7.0",
+			ProtocolVersion: "a2a/0.3",
+		}
+	}
+	s.card.Skills = append(s.card.Skills, skill)
+
+	raw, err := proto.Marshal(s.card)
+	if err != nil {
+		s.logger.Error("failed to marshal card after skill registration", "error", err)
+		return
+	}
+	s.cardRaw = raw
+	s.host.SetSelfCard(raw)
+}
+
 // forwardIncomingTasks reads from the router's incoming channel and fans out to all subscribers.
+// If an MCP proxy handler is registered and the incoming task targets a proxy-managed skill,
+// the task is handled automatically without forwarding to SDK subscribers.
 func (s *Server) forwardIncomingTasks(ctx context.Context) {
 	for {
 		select {
@@ -170,6 +219,13 @@ func (s *Server) forwardIncomingTasks(ctx context.Context) {
 				return
 			}
 			metrics.TasksTotal.WithLabelValues("received", "submitted").Inc()
+
+			// v0.7: Check if this task targets an MCP proxy skill.
+			if s.mcpProxyHandler != nil && evt.Task != nil && s.mcpProxySkills[evt.Task.TargetSkillId] {
+				go s.handleMCPProxyTask(ctx, evt)
+				continue
+			}
+
 			s.subsMu.Lock()
 			for _, ch := range s.incomingTaskSubs {
 				select {
@@ -180,6 +236,75 @@ func (s *Server) forwardIncomingTasks(ctx context.Context) {
 			s.subsMu.Unlock()
 		}
 	}
+}
+
+// handleMCPProxyTask processes an incoming task via the MCP proxy handler.
+// It extracts the message text as JSON arguments, invokes the proxy handler,
+// and sends the result back to the originator.
+func (s *Server) handleMCPProxyTask(ctx context.Context, evt *a2a.IncomingTaskEvent) {
+	task := evt.Task
+	skillID := task.TargetSkillId
+
+	// Mark task as working.
+	_ = s.engine.TransitionTask(ctx, task.TaskId, a2a.StatusWorking)
+
+	// Extract message text as the input arguments.
+	var input json.RawMessage
+	if len(task.Messages) > 0 && len(task.Messages[0].Parts) > 0 {
+		for _, part := range task.Messages[0].Parts {
+			if tp := part.GetTextPart(); tp != nil {
+				input = json.RawMessage(tp.Text)
+				break
+			}
+		}
+	}
+	if input == nil {
+		input = json.RawMessage(`{}`)
+	}
+
+	// Call the MCP proxy handler.
+	callCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	result, err := s.mcpProxyHandler(callCtx, skillID, input)
+	if err != nil {
+		s.logger.Error("MCP proxy task failed", "task_id", task.TaskId, "skill", skillID, "error", err)
+		_ = s.engine.TransitionTask(ctx, task.TaskId, a2a.StatusFailed)
+
+		// Send failure back to originator.
+		if task.OriginatorPeerId != "" && task.OriginatorPeerId != "local" {
+			pid, peerErr := peer.Decode(task.OriginatorPeerId)
+			if peerErr == nil {
+				bgCtx, bgCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer bgCancel()
+				_ = s.router.SendFail(bgCtx, pid, task.TaskId, err.Error())
+			}
+		}
+		return
+	}
+
+	// Mark as completed and send result back.
+	_ = s.engine.TransitionTask(ctx, task.TaskId, a2a.StatusCompleted)
+
+	resultArtifact := &pb.Artifact{
+		Parts: []*pb.Part{
+			{Content: &pb.Part_TextPart{TextPart: &pb.TextPart{Text: string(result)}}},
+		},
+	}
+
+	if task.OriginatorPeerId != "" && task.OriginatorPeerId != "local" {
+		pid, peerErr := peer.Decode(task.OriginatorPeerId)
+		if peerErr == nil {
+			bgCtx, bgCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer bgCancel()
+			if sendErr := s.router.SendComplete(bgCtx, pid, task.TaskId, []*pb.Artifact{resultArtifact}, nil); sendErr != nil {
+				s.logger.Warn("failed to send MCP proxy result to originator",
+					"task_id", task.TaskId, "peer", pid, "error", sendErr)
+			}
+		}
+	}
+
+	s.logger.Info("MCP proxy task completed", "task_id", task.TaskId, "skill", skillID)
 }
 
 // ── Node Management ────────────────────────────────────────

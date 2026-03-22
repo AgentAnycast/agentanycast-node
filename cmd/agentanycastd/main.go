@@ -12,11 +12,14 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
+
+	"encoding/json"
 
 	"github.com/agentanycast/agentanycast-node/internal/a2a"
 	a2aadapter "github.com/agentanycast/agentanycast-node/internal/adapter/a2a"
@@ -30,6 +33,7 @@ import (
 	"github.com/agentanycast/agentanycast-node/internal/core"
 	"github.com/agentanycast/agentanycast-node/internal/crypto"
 	agentmcp "github.com/agentanycast/agentanycast-node/internal/mcp"
+	"github.com/agentanycast/agentanycast-node/internal/mcpproxy"
 	"github.com/agentanycast/agentanycast-node/internal/metrics"
 	"github.com/agentanycast/agentanycast-node/internal/node"
 	"github.com/agentanycast/agentanycast-node/internal/store"
@@ -51,6 +55,7 @@ func main() {
 		flagANPListen          = flag.String("anp-listen", "", "ANP bridge listen address (e.g., :8090)")
 		flagMCP                = flag.Bool("mcp", false, "run as MCP server over stdio (for Claude Desktop, Cursor, etc.)")
 		flagMCPListen          = flag.String("mcp-listen", "", "MCP Streamable HTTP listen address (e.g., :3000)")
+		flagMCPProxy           = flag.String("mcp-proxy", "", "wrap an MCP Server command as P2P agent (e.g., 'uvx mcp-server-filesystem /tmp')")
 		flagOTLPEndpoint       = flag.String("otlp-endpoint", "", "OTLP gRPC endpoint for tracing (e.g., localhost:4317)")
 		flagVersion            = flag.Bool("version", false, "print version and exit")
 	)
@@ -425,6 +430,46 @@ func main() {
 
 	_ = connectionCore // Connection Core available for new features (MCP Proxy, etc.)
 
+	// ── v0.7 Phase B: MCP Remote Proxy ───────────────────────
+	var mcpProxyInstance *mcpproxy.Proxy
+	if *flagMCPProxy != "" {
+		proxyArgs := strings.Fields(*flagMCPProxy)
+		if len(proxyArgs) == 0 {
+			logger.Error("--mcp-proxy requires a command")
+			os.Exit(1)
+		}
+
+		var err error
+		mcpProxyInstance, err = mcpproxy.New(ctx, mcpproxy.Config{
+			Command:   proxyArgs[0],
+			Args:      proxyArgs[1:],
+			AgentName: filepath.Base(proxyArgs[0]),
+			Logger:    logger,
+		})
+		if err != nil {
+			logger.Error("failed to start MCP proxy", "error", err)
+			os.Exit(1)
+		}
+		defer mcpProxyInstance.Close()
+
+		// Register each discovered tool as a skill on the agent card.
+		for _, skill := range mcpProxyInstance.Skills() {
+			grpcSrv.RegisterProxySkill(skill)
+		}
+
+		// Register the proxy task handler — incoming tasks targeting proxy skills
+		// are automatically forwarded to the MCP subprocess.
+		skillIDs := make([]string, 0, len(mcpProxyInstance.Tools()))
+		for _, t := range mcpProxyInstance.Tools() {
+			skillIDs = append(skillIDs, t.Name)
+		}
+		grpcSrv.RegisterMCPProxyHandler(func(handlerCtx context.Context, skillID string, input json.RawMessage) (json.RawMessage, error) {
+			return mcpProxyInstance.HandleTask(handlerCtx, skillID, input)
+		}, skillIDs)
+
+		logger.Info("MCP proxy started", "command", *flagMCPProxy, "tools", len(mcpProxyInstance.Tools()))
+	}
+
 	// ── Print Startup Info ───────────────────────────────────
 	logger.Info("agentanycastd started",
 		"version", version,
@@ -434,6 +479,7 @@ func main() {
 		"bridge_enabled", cfg.Bridge.Enabled,
 		"anp_enabled", cfg.ANP.Enabled,
 		"mcp_stdio", *flagMCP,
+		"mcp_proxy", *flagMCPProxy != "",
 		"metrics_enabled", cfg.Metrics.Enabled,
 	)
 
