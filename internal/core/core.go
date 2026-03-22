@@ -30,6 +30,11 @@ type Core struct {
 	protocols  map[string]adapter.ProtocolAdapter
 	transports []adapter.TransportAdapter
 	logger     *slog.Logger
+
+	// Enterprise capabilities (v0.8).
+	acl       *ACLManager
+	rateLimit *RateLimiter
+	audit     *AuditLogger
 }
 
 // Config holds configuration for the Connection Core.
@@ -114,6 +119,89 @@ func (c *Core) Send(ctx context.Context, env *envelope.Envelope) error {
 	err := fmt.Errorf("core: no transport matches target %q", env.Target)
 	span.RecordError(err)
 	return err
+}
+
+// SetACLManager configures the ACL manager for access control enforcement.
+func (c *Core) SetACLManager(acl *ACLManager) {
+	c.acl = acl
+}
+
+// SetRateLimiter configures the per-source rate limiter.
+func (c *Core) SetRateLimiter(rl *RateLimiter) {
+	c.rateLimit = rl
+}
+
+// SetAuditLogger configures the audit logger for security events.
+func (c *Core) SetAuditLogger(al *AuditLogger) {
+	c.audit = al
+}
+
+// Route is the recommended entry point for dispatching envelopes. It wraps
+// Send with ACL enforcement, rate limiting, and audit logging.
+func (c *Core) Route(ctx context.Context, env *envelope.Envelope) error {
+	ctx, span := tracer.Start(ctx, "connection.route",
+		trace.WithAttributes(
+			attribute.String("envelope.id", env.ID),
+			attribute.String("envelope.type", string(env.Type)),
+			attribute.String("envelope.target", env.Target),
+		),
+	)
+	defer span.End()
+
+	skillID := env.Meta(envelope.MetaKeySkill)
+	sourceID := env.Source.DIDKey
+	if sourceID == "" {
+		sourceID = env.Source.PeerID
+	}
+
+	// 1. ACL check.
+	if c.acl != nil {
+		if err := c.acl.CheckAccess(env.Source, skillID); err != nil {
+			if c.audit != nil {
+				c.audit.Log(AuditEvent{
+					Source: sourceID,
+					Target: env.Target,
+					Skill:  skillID,
+					Action: "deny",
+					EnvID:  env.ID,
+				})
+			}
+			span.RecordError(err)
+			return err
+		}
+	}
+
+	// 2. Rate limit check.
+	if c.rateLimit != nil {
+		if !c.rateLimit.Allow(env.Source) {
+			rateLimitErr := fmt.Errorf("core: rate limit exceeded for %s", sourceID)
+			if c.audit != nil {
+				c.audit.Log(AuditEvent{
+					Source: sourceID,
+					Target: env.Target,
+					Skill:  skillID,
+					Action: "rate_limit",
+					EnvID:  env.ID,
+				})
+			}
+			span.RecordError(rateLimitErr)
+			return rateLimitErr
+		}
+	}
+
+	// 3. Audit: record allowed access.
+	if c.audit != nil {
+		c.audit.Log(AuditEvent{
+			Source: sourceID,
+			Target: env.Target,
+			Skill:  skillID,
+			Action: "allow",
+			EnvID:  env.ID,
+		})
+	}
+
+	// 4. Dispatch via Send.
+	return c.Send(ctx, env)
 }
 
 // ProtocolNames returns the names of all registered protocol adapters.

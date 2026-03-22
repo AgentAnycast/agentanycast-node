@@ -37,6 +37,9 @@ const MetaKeyTraceParent = "traceparent"
 // MetaKeyTraceState is the W3C Trace Context tracestate header.
 const MetaKeyTraceState = "tracestate"
 
+// MetaKeySkill identifies the target skill for routing and access control.
+const MetaKeySkill = "skill"
+
 // AgentIdentity identifies the source or target of an envelope.
 type AgentIdentity struct {
 	PeerID string

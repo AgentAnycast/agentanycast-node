@@ -26,6 +26,7 @@ import (
 	anpadapter "github.com/agentanycast/agentanycast-node/internal/adapter/anp"
 	httpadapter "github.com/agentanycast/agentanycast-node/internal/adapter/http"
 	libp2padapter "github.com/agentanycast/agentanycast-node/internal/adapter/libp2p"
+	natsadapter "github.com/agentanycast/agentanycast-node/internal/adapter/nats"
 	"github.com/agentanycast/agentanycast-node/internal/anp"
 	"github.com/agentanycast/agentanycast-node/internal/anycast"
 	"github.com/agentanycast/agentanycast-node/internal/bridge"
@@ -57,6 +58,7 @@ func main() {
 		flagMCPListen          = flag.String("mcp-listen", "", "MCP Streamable HTTP listen address (e.g., :3000)")
 		flagMCPProxy           = flag.String("mcp-proxy", "", "wrap an MCP Server command as P2P agent (e.g., 'uvx mcp-server-filesystem /tmp')")
 		flagOTLPEndpoint       = flag.String("otlp-endpoint", "", "OTLP gRPC endpoint for tracing (e.g., localhost:4317)")
+		flagNATSBroker         = flag.String("nats-broker", "", "NATS broker address (e.g., nats://localhost:4222)")
 		flagVersion            = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
@@ -428,7 +430,50 @@ func main() {
 		connectionCore.RegisterTransport(httpadapter.New(nil)) // HTTP bridge uses existing outbound client
 	}
 
-	_ = connectionCore // Connection Core available for new features (MCP Proxy, etc.)
+	// ── v0.8: NATS Transport ────────────────────────────────
+	if *flagNATSBroker != "" {
+		cfg.Transport.NATS.Enabled = true
+		cfg.Transport.NATS.Broker = *flagNATSBroker
+	}
+	if cfg.Transport.NATS.Enabled {
+		if cfg.Transport.NATS.SubjectPrefix == "" {
+			cfg.Transport.NATS.SubjectPrefix = "agent."
+		}
+		natsTransport, err := natsadapter.New(
+			ctx, cfg.Transport.NATS, h.ID().String(), a2aAdapter, logger,
+		)
+		if err != nil {
+			logger.Error("failed to create NATS transport", "error", err)
+			os.Exit(1)
+		}
+		connectionCore.RegisterTransport(natsTransport)
+		defer natsTransport.Close()
+		logger.Info("NATS transport registered", "broker", cfg.Transport.NATS.Broker)
+	}
+
+	// ── v0.8: Enterprise capabilities (ACL, Rate Limiting, Audit) ──
+	if len(cfg.Policy.ACLRules) > 0 {
+		aclMgr := core.NewACLManager(cfg.Policy.ACLRules, logger)
+		connectionCore.SetACLManager(aclMgr)
+		logger.Info("ACL manager configured", "rules", len(cfg.Policy.ACLRules))
+	}
+	if cfg.Policy.RateLimits.DefaultRPS > 0 {
+		rl := core.NewRateLimiter(cfg.Policy.RateLimits, logger)
+		connectionCore.SetRateLimiter(rl)
+		logger.Info("rate limiter configured", "default_rps", cfg.Policy.RateLimits.DefaultRPS)
+	}
+	if cfg.Policy.AuditLogPath != "" {
+		al, err := core.NewAuditLogger(cfg.Policy.AuditLogPath, logger)
+		if err != nil {
+			logger.Error("failed to create audit logger", "error", err)
+			os.Exit(1)
+		}
+		connectionCore.SetAuditLogger(al)
+		defer al.Close()
+		logger.Info("audit logger configured", "path", cfg.Policy.AuditLogPath)
+	}
+
+	_ = connectionCore // Connection Core with transports, ACL, rate limiting, audit
 
 	// ── v0.7 Phase B: MCP Remote Proxy ───────────────────────
 	var mcpProxyInstance *mcpproxy.Proxy

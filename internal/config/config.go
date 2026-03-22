@@ -67,6 +67,12 @@ type Config struct {
 
 	// v0.7: OpenTelemetry tracing settings
 	Telemetry TelemetryConfig `toml:"telemetry"`
+
+	// v0.8: Pluggable transport settings
+	Transport TransportConfig `toml:"transport"`
+
+	// v0.8: Policy settings (ACL, rate limiting, audit)
+	Policy PolicyConfig `toml:"policy"`
 }
 
 // Validate checks the configuration for logical errors and returns the first
@@ -99,6 +105,17 @@ func (c *Config) Validate() error {
 	// ANP and Bridge listen addresses must not conflict.
 	if c.ANP.Enabled && c.Bridge.Enabled && c.ANP.Listen != "" && c.ANP.Listen == c.Bridge.Listen {
 		return fmt.Errorf("config: anp.listen %q conflicts with bridge.listen (same address)", c.ANP.Listen)
+	}
+
+	// NATS transport validation.
+	if c.Transport.NATS.Enabled {
+		broker := c.Transport.NATS.Broker
+		if broker == "" {
+			return errors.New("config: transport.nats.broker must not be empty when NATS is enabled")
+		}
+		if !strings.HasPrefix(broker, "nats://") && !strings.HasPrefix(broker, "tls://") {
+			return fmt.Errorf("config: transport.nats.broker %q must start with nats:// or tls://", broker)
+		}
 	}
 
 	return nil
@@ -183,6 +200,49 @@ type TelemetryConfig struct {
 	OTLPEndpoint string  `toml:"otlp_endpoint"` // e.g. "localhost:4317"
 	SampleRate   float64 `toml:"sample_rate"`    // 0.0 - 1.0, default 1.0
 	Insecure     bool    `toml:"insecure"`       // use plaintext gRPC (default true for localhost)
+}
+
+// TransportConfig holds settings for pluggable transport adapters.
+type TransportConfig struct {
+	NATS NATSConfig `toml:"nats"`
+}
+
+// NATSConfig holds configuration for the NATS transport adapter.
+type NATSConfig struct {
+	Enabled       bool   `toml:"enabled"`
+	Broker        string `toml:"broker"`         // e.g. "nats://localhost:4222"
+	SubjectPrefix string `toml:"subject_prefix"` // e.g. "agent." — subject per agent = prefix + peerID
+	AuthUser      string `toml:"auth_user"`
+	AuthPass      string `toml:"auth_pass"`
+	TLSEnabled    bool   `toml:"tls_enabled"`
+	TLSCertFile   string `toml:"tls_cert_file"`
+	TLSKeyFile    string `toml:"tls_key_file"`
+}
+
+// PolicyConfig holds access control and rate limiting configuration.
+type PolicyConfig struct {
+	AuditLogPath string          `toml:"audit_log_path"`
+	ACLRules     []ACLRule       `toml:"acl"`
+	RateLimits   RateLimitConfig `toml:"rate_limit"`
+}
+
+// ACLRule defines an access control rule matching source DID and skill patterns.
+type ACLRule struct {
+	Source string `toml:"source"` // glob pattern, e.g. "did:web:trusted.com:*"
+	Skill  string `toml:"skill"`  // glob pattern or "*"
+	Allow  bool   `toml:"allow"`
+}
+
+// RateLimitConfig holds rate limiting settings.
+type RateLimitConfig struct {
+	DefaultRPS int             `toml:"default_rps"` // default: 100
+	Overrides  []RateLimitRule `toml:"overrides"`
+}
+
+// RateLimitRule overrides the default rate limit for a specific source DID.
+type RateLimitRule struct {
+	Source string `toml:"source"` // exact DID match
+	RPS    int    `toml:"rps"`
 }
 
 // DefaultConfig returns the default daemon configuration.
@@ -332,4 +392,9 @@ func (c *Config) ApplyEnv() {
 			c.Telemetry.SampleRate = rate
 		}
 	}
+
+	// NATS transport settings.
+	envOverrideBool(&c.Transport.NATS.Enabled, "AGENTANYCAST_NATS_ENABLED")
+	envOverride(&c.Transport.NATS.Broker, "AGENTANYCAST_NATS_BROKER")
+	envOverride(&c.Transport.NATS.SubjectPrefix, "AGENTANYCAST_NATS_SUBJECT_PREFIX")
 }
