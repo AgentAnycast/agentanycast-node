@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 
@@ -72,7 +73,9 @@ func (t *Transport) Subscribe(_ context.Context) (<-chan adapter.InboundMessage,
 // independently — this handler is additive, feeding the Connection Core.
 func (t *Transport) RegisterHandler() {
 	t.host.RegisterA2AProtocol(func(remotePeer peer.ID, data []byte) {
-		env, err := t.protocol.Ingest(context.Background(), data, map[string]string{
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		env, err := t.protocol.Ingest(ctx, data, map[string]string{
 			"remote_peer": remotePeer.String(),
 			"transport":   "libp2p",
 		})

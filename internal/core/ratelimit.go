@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -30,7 +31,9 @@ type limiterEntry struct {
 }
 
 // NewRateLimiter creates a rate limiter with default and per-source limits.
-func NewRateLimiter(cfg config.RateLimitConfig, logger *slog.Logger) *RateLimiter {
+// It accepts an optional context — if non-nil, the cleanup goroutine will
+// also stop when the context is canceled (in addition to Stop()).
+func NewRateLimiter(cfg config.RateLimitConfig, logger *slog.Logger, ctx ...context.Context) *RateLimiter {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -45,6 +48,11 @@ func NewRateLimiter(cfg config.RateLimitConfig, logger *slog.Logger) *RateLimite
 		overrides[o.Source] = o.RPS
 	}
 
+	var parentCtx context.Context
+	if len(ctx) > 0 && ctx[0] != nil {
+		parentCtx = ctx[0]
+	}
+
 	rl := &RateLimiter{
 		limiters:   make(map[string]*limiterEntry),
 		defaultRPS: defaultRPS,
@@ -54,7 +62,7 @@ func NewRateLimiter(cfg config.RateLimitConfig, logger *slog.Logger) *RateLimite
 	}
 
 	// Start cleanup goroutine to evict entries not seen for 10 minutes.
-	go rl.cleanup()
+	go rl.cleanup(parentCtx)
 
 	return rl
 }
@@ -109,9 +117,15 @@ func (rl *RateLimiter) AllowN(source envelope.AgentIdentity) error {
 	return nil
 }
 
-func (rl *RateLimiter) cleanup() {
+func (rl *RateLimiter) cleanup(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
+
+	// Use a nil channel when no context — select on a nil channel blocks forever.
+	var ctxDone <-chan struct{}
+	if ctx != nil {
+		ctxDone = ctx.Done()
+	}
 
 	for {
 		select {
@@ -125,6 +139,8 @@ func (rl *RateLimiter) cleanup() {
 			}
 			rl.mu.Unlock()
 		case <-rl.stopCh:
+			return
+		case <-ctxDone:
 			return
 		}
 	}

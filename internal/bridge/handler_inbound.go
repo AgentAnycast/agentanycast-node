@@ -13,6 +13,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pb "github.com/agentanycast/agentanycast-proto/gen/go/agentanycast/v1"
+	"github.com/agentanycast/agentanycast-node/internal/envelope"
 )
 
 var bridgeInboundTracer = otel.Tracer("agentanycast/bridge/inbound")
@@ -23,9 +24,15 @@ type TaskSender interface {
 	HandleInboundTask(task *pb.Task) (*pb.Task, error)
 }
 
+// InboundPolicyChecker enforces access control on inbound HTTP bridge requests.
+type InboundPolicyChecker interface {
+	CheckInbound(source envelope.AgentIdentity, skillID, envelopeID string) error
+}
+
 // InboundHandler handles HTTP → P2P inbound translation.
 type InboundHandler struct {
 	sender TaskSender
+	policy InboundPolicyChecker
 	logger *slog.Logger
 }
 
@@ -40,6 +47,12 @@ func NewInboundHandler(sender TaskSender, logger *slog.Logger) *InboundHandler {
 // SetSender sets the TaskSender after construction (for wiring order issues).
 func (h *InboundHandler) SetSender(sender TaskSender) {
 	h.sender = sender
+}
+
+// SetInboundPolicy configures the inbound policy checker for ACL, rate
+// limiting, and audit on HTTP bridge requests.
+func (h *InboundHandler) SetInboundPolicy(policy InboundPolicyChecker) {
+	h.policy = policy
 }
 
 // ServeHTTP handles A2A JSON-RPC requests from HTTP agents.
@@ -87,6 +100,16 @@ func (h *InboundHandler) handleSendTask(w http.ResponseWriter, req A2AHTTPReques
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		h.writeError(w, req.ID, -32602, "invalid params: "+err.Error())
 		return
+	}
+
+	// Inbound policy check (ACL, rate limiting, audit).
+	if h.policy != nil {
+		source := envelope.AgentIdentity{} // HTTP bridge: anonymous source
+		if err := h.policy.CheckInbound(source, params.TargetSkillID, ""); err != nil {
+			h.logger.Warn("inbound policy rejected bridge request", "skill", params.TargetSkillID, "error", err)
+			h.writeError(w, req.ID, -32000, "access denied: "+err.Error())
+			return
+		}
 	}
 
 	// Convert HTTP message to protobuf task.

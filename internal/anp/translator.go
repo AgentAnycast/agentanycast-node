@@ -164,6 +164,53 @@ func JSONRPCResultToArtifact(result any) *pb.Artifact {
 	}
 }
 
+// ExtractInputText extracts the input text from ANP task params.
+// It handles map[string]any with an "input" key, string params, and
+// falls back to JSON serialization for other types.
+func ExtractInputText(params any) string {
+	switch v := params.(type) {
+	case map[string]any:
+		if input, ok := v["input"]; ok {
+			return fmt.Sprintf("%v", input)
+		}
+		if message, ok := v["message"]; ok {
+			return fmt.Sprintf("%v", message)
+		}
+		data, _ := json.Marshal(v)
+		return string(data)
+	case string:
+		return v
+	default:
+		if v == nil {
+			return ""
+		}
+		data, _ := json.Marshal(v)
+		return string(data)
+	}
+}
+
+// ProtoTaskToResult converts a protobuf Task to a JSON-serializable result
+// suitable for an ANP JSON-RPC response.
+func ProtoTaskToResult(task *pb.Task) any {
+	if task == nil {
+		return nil
+	}
+	result := map[string]any{
+		"task_id": task.TaskId,
+		"status":  task.Status.String(),
+	}
+	if len(task.Messages) > 0 {
+		lastMsg := task.Messages[len(task.Messages)-1]
+		for _, part := range lastMsg.Parts {
+			if tp := part.GetTextPart(); tp != nil {
+				result["text"] = tp.Text
+				break
+			}
+		}
+	}
+	return result
+}
+
 // extractTextFromResult extracts a text string from a JSON-RPC result value.
 // It handles string results directly, maps with a "text" key, and falls back
 // to JSON serialization for other types.

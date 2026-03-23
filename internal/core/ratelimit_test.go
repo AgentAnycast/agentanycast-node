@@ -1,6 +1,9 @@
 package core
 
 import (
+	"context"
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/agentanycast/agentanycast-node/internal/config"
@@ -77,6 +80,46 @@ func TestRateLimiterUnknownSource(t *testing.T) {
 		if !rl.Allow(empty) {
 			t.Fatalf("expected unknown source request %d to be allowed", i)
 		}
+	}
+}
+
+func TestRateLimiterConcurrentAccess(t *testing.T) {
+	cfg := config.RateLimitConfig{DefaultRPS: 1000}
+	rl := NewRateLimiter(cfg, nil)
+	defer rl.Stop()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			source := envelope.AgentIdentity{PeerID: fmt.Sprintf("peer-%d", id%10)}
+			for j := 0; j < 100; j++ {
+				rl.Allow(source)
+			}
+		}(i)
+	}
+	wg.Wait()
+}
+
+func TestRateLimiterContextCancellation(t *testing.T) {
+	cfg := config.RateLimitConfig{DefaultRPS: 100}
+	ctx, cancel := context.WithCancel(context.Background())
+	rl := NewRateLimiter(cfg, nil, ctx)
+
+	// Verify the limiter works.
+	source := envelope.AgentIdentity{DIDKey: "did:key:z123"}
+	if !rl.Allow(source) {
+		t.Fatal("expected first request to be allowed")
+	}
+
+	// Cancel context — cleanup goroutine should exit without needing Stop().
+	cancel()
+
+	// The limiter should still function for Allow() calls after ctx cancel
+	// (only the cleanup goroutine stops, not the limiter itself).
+	if !rl.Allow(source) {
+		t.Fatal("expected Allow to work after context cancellation")
 	}
 }
 

@@ -123,7 +123,7 @@ func (t *Transport) Send(ctx context.Context, target string, env *envelope.Envel
 	}
 
 	if err := t.conn.Publish(subject, data); err != nil {
-		return fmt.Errorf("nats: publish to %s: %w", subject, err)
+		return fmt.Errorf("nats: publish to subject %s (%d bytes): %w", subject, len(data), err)
 	}
 	return nil
 }
@@ -172,7 +172,7 @@ func (t *Transport) handleMessage(msg *natsgo.Msg) {
 		"nats.subject": msg.Subject,
 	})
 	if err != nil {
-		t.logger.Warn("nats: ingest failed", "subject", msg.Subject, "error", err)
+		t.logger.Warn("nats: ingest failed", "subject", msg.Subject, "data_len", len(msg.Data), "error", err)
 		return
 	}
 

@@ -21,6 +21,8 @@ import (
 
 	"encoding/json"
 
+	pb "github.com/agentanycast/agentanycast-proto/gen/go/agentanycast/v1"
+
 	"github.com/agentanycast/agentanycast-node/internal/a2a"
 	a2aadapter "github.com/agentanycast/agentanycast-node/internal/adapter/a2a"
 	anpadapter "github.com/agentanycast/agentanycast-node/internal/adapter/anp"
@@ -333,8 +335,10 @@ func main() {
 	}
 
 	// ── v0.2: HTTP Bridge Server (optional) ─────────────────
+	var bridgeInbound *bridge.InboundHandler
 	if cfg.Bridge.Enabled {
 		inbound := bridge.NewInboundHandler(grpcSrv, logger)
+		bridgeInbound = inbound
 		baseURL := bridge.BaseURL(cfg.Bridge.Listen, cfg.Bridge.TLSCert != "")
 		cardEndpoint := bridge.NewCardEndpoint(grpcSrv.GetLocalCard, baseURL, logger)
 
@@ -374,11 +378,35 @@ func main() {
 		go func() {
 			for task := range anpTaskChan {
 				go func(t anp.IncomingANPTask) {
-					rpcReq := anp.TaskToJSONRPCRequest(t.Method, "", "")
-					_ = rpcReq // ANP task processing wired to A2A engine in future iterations.
+					// Extract input text from params for the A2A task message.
+					inputText := anp.ExtractInputText(t.Params)
+
+					// Build a protobuf task with the ANP method as the target skill.
+					msg := &pb.Message{
+						Role: pb.MessageRole_MESSAGE_ROLE_USER,
+						Parts: []*pb.Part{
+							{Content: &pb.Part_TextPart{TextPart: &pb.TextPart{Text: inputText}}},
+						},
+					}
+					pbTask := &pb.Task{
+						Status:        pb.TaskStatus_TASK_STATUS_SUBMITTED,
+						TargetSkillId: t.Method,
+						Messages:      []*pb.Message{msg},
+					}
+
+					result, err := grpcSrv.HandleInboundTask(pbTask)
+					if err != nil {
+						t.ResultCh <- &anp.JSONRPCResponse{
+							JSONRPC: "2.0",
+							Error:   &anp.JSONRPCError{Code: -32603, Message: err.Error()},
+							ID:      t.Method,
+						}
+						return
+					}
+
 					t.ResultCh <- &anp.JSONRPCResponse{
 						JSONRPC: "2.0",
-						Error:   &anp.JSONRPCError{Code: -32601, Message: "method not implemented via ANP bridge yet"},
+						Result:  anp.ProtoTaskToResult(result),
 						ID:      t.Method,
 					}
 				}(task)
@@ -463,7 +491,7 @@ func main() {
 		logger.Info("ACL manager configured", "rules", len(cfg.Policy.ACLRules))
 	}
 	if cfg.Policy.RateLimits.DefaultRPS > 0 {
-		rl := core.NewRateLimiter(cfg.Policy.RateLimits, logger)
+		rl := core.NewRateLimiter(cfg.Policy.RateLimits, logger, ctx)
 		connectionCore.SetRateLimiter(rl)
 		defer rl.Stop()
 		logger.Info("rate limiter configured", "default_rps", cfg.Policy.RateLimits.DefaultRPS)
@@ -480,6 +508,10 @@ func main() {
 	}
 
 	grpcSrv.SetConnectionCore(connectionCore)
+	router.SetInboundPolicy(connectionCore)
+	if bridgeInbound != nil {
+		bridgeInbound.SetInboundPolicy(connectionCore)
+	}
 
 	// ── v0.7 Phase B: MCP Remote Proxy ───────────────────────
 	var mcpProxyInstance *mcpproxy.Proxy

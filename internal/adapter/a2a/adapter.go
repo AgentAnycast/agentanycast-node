@@ -65,7 +65,7 @@ func (a *Adapter) Name() string { return "a2a" }
 func (a *Adapter) Ingest(ctx context.Context, raw []byte, metadata map[string]string) (*envelope.Envelope, error) {
 	var pbEnv pb.A2AEnvelope
 	if err := proto.Unmarshal(raw, &pbEnv); err != nil {
-		return nil, fmt.Errorf("a2a: unmarshal envelope: %w", err)
+		return nil, fmt.Errorf("a2a: unmarshal envelope (%d bytes): %w", len(raw), err)
 	}
 
 	envType, ok := envelopeTypeMap[pbEnv.Type]
@@ -111,7 +111,7 @@ func (a *Adapter) Ingest(ctx context.Context, raw []byte, metadata map[string]st
 // (which is already a serialized pb.A2AEnvelope).
 func (a *Adapter) Emit(ctx context.Context, env *envelope.Envelope) ([]byte, error) {
 	if env.Payload == nil {
-		return nil, fmt.Errorf("a2a: envelope has nil payload")
+		return nil, fmt.Errorf("a2a: envelope %s has nil payload", env.ID)
 	}
 	return env.Payload, nil
 }

@@ -18,6 +18,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pb "github.com/agentanycast/agentanycast-proto/gen/go/agentanycast/v1"
+	"github.com/agentanycast/agentanycast-node/internal/envelope"
 	"github.com/agentanycast/agentanycast-node/internal/telemetry"
 )
 
@@ -26,6 +27,13 @@ type SendFunc func(ctx context.Context, pid peer.ID, data []byte) error
 
 // PeerCardFunc returns the raw agent card bytes for a peer, if available.
 type PeerCardFunc func(pid peer.ID) ([]byte, bool)
+
+// InboundPolicy checks whether an inbound message from a remote peer should
+// be allowed. Implementations may enforce ACL rules, rate limits, and audit
+// logging. The method returns nil if the message is permitted.
+type InboundPolicy interface {
+	CheckInbound(source envelope.AgentIdentity, skillID, envelopeID string) error
+}
 
 // dedupCacheSize is the max number of envelope IDs to remember for dedup.
 const dedupCacheSize = 1024
@@ -38,6 +46,10 @@ type Router struct {
 	sendFn     SendFunc
 	peerCardFn PeerCardFunc
 	ackTracker *AckTracker
+
+	// inboundPolicy enforces ACL, rate limiting, and audit on inbound messages.
+	// If nil, all inbound messages are accepted (backward-compatible default).
+	inboundPolicy InboundPolicy
 
 	mu              sync.RWMutex
 	incomingCh      chan *IncomingTaskEvent
@@ -100,6 +112,12 @@ func NewRouter(engine *Engine, logger *slog.Logger, sendFn SendFunc, peerCardFn 
 	return r
 }
 
+// SetInboundPolicy configures the inbound policy checker (ACL, rate limiting,
+// audit). When set, HandleMessage will reject messages that violate the policy.
+func (r *Router) SetInboundPolicy(policy InboundPolicy) {
+	r.inboundPolicy = policy
+}
+
 // IncomingTasks returns the channel of new incoming task events.
 func (r *Router) IncomingTasks() <-chan *IncomingTaskEvent {
 	return r.incomingCh
@@ -150,6 +168,22 @@ func (r *Router) HandleMessage(remotePeer peer.ID, data []byte) {
 		),
 	)
 	defer span.End()
+
+	// Inbound policy check (ACL, rate limiting, audit) — applied to all
+	// non-ACK envelopes so enterprise features cover inbound traffic.
+	if r.inboundPolicy != nil && env.Type != pb.EnvelopeType_ENVELOPE_TYPE_ACK {
+		skillID := extractSkillID(&env)
+		source := envelope.AgentIdentity{PeerID: remotePeer.String()}
+		if err := r.inboundPolicy.CheckInbound(source, skillID, env.EnvelopeId); err != nil {
+			r.logger.Warn("inbound policy rejected message",
+				"peer", remotePeer,
+				"envelope_id", env.EnvelopeId,
+				"error", err,
+			)
+			span.RecordError(err)
+			return
+		}
+	}
 
 	r.logger.Debug("routing A2A envelope",
 		"peer", remotePeer,
@@ -551,6 +585,14 @@ func ProtoToTaskStatus(s pb.TaskStatus) TaskStatus {
 	default:
 		return StatusUnspecified
 	}
+}
+
+// extractSkillID extracts the target skill ID from an A2A envelope payload.
+func extractSkillID(env *pb.A2AEnvelope) string {
+	if p := env.GetSendTask(); p != nil {
+		return p.TargetSkillId
+	}
+	return ""
 }
 
 // ExtractEnvelopeID attempts to extract the envelope ID from serialized A2A

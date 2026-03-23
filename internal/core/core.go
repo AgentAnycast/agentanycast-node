@@ -123,7 +123,7 @@ func (c *Core) Send(ctx context.Context, env *envelope.Envelope) error {
 		}
 	}
 
-	err := fmt.Errorf("core: no transport matches target %q", env.Target)
+	err := fmt.Errorf("core: no transport matches target %q for envelope %s", env.Target, env.ID)
 	span.RecordError(err)
 	span.SetStatus(codes.Error, err.Error())
 	return err
@@ -236,6 +236,62 @@ func (c *Core) Route(ctx context.Context, env *envelope.Envelope) error {
 
 	// 4. Dispatch via Send.
 	return c.Send(ctx, env)
+}
+
+// CheckInbound enforces ACL, rate limiting, and audit logging for inbound
+// messages. It mirrors the outbound checks in Route() but is designed for
+// messages arriving from remote peers (via libp2p, HTTP bridge, or NATS).
+// Returns nil if the message is allowed to proceed.
+func (c *Core) CheckInbound(source envelope.AgentIdentity, skillID, envelopeID string) error {
+	sourceID := source.DIDKey
+	if sourceID == "" {
+		sourceID = source.PeerID
+	}
+
+	// 1. ACL check.
+	if c.acl != nil {
+		if err := c.acl.CheckAccess(source, skillID); err != nil {
+			if c.audit != nil {
+				c.audit.Log(AuditEvent{
+					Source:    sourceID,
+					Skill:     skillID,
+					Action:    "deny",
+					EnvID:     envelopeID,
+					Transport: "inbound",
+				})
+			}
+			return err
+		}
+	}
+
+	// 2. Rate limit check.
+	if c.rateLimit != nil {
+		if !c.rateLimit.Allow(source) {
+			if c.audit != nil {
+				c.audit.Log(AuditEvent{
+					Source:    sourceID,
+					Skill:     skillID,
+					Action:    "rate_limit",
+					EnvID:     envelopeID,
+					Transport: "inbound",
+				})
+			}
+			return fmt.Errorf("inbound: rate limit exceeded for %s", sourceID)
+		}
+	}
+
+	// 3. Audit: record allowed inbound access.
+	if c.audit != nil {
+		c.audit.Log(AuditEvent{
+			Source:    sourceID,
+			Skill:     skillID,
+			Action:    "allow",
+			EnvID:     envelopeID,
+			Transport: "inbound",
+		})
+	}
+
+	return nil
 }
 
 // ProtocolNames returns the names of all registered protocol adapters.
