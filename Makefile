@@ -3,7 +3,7 @@ BINARY  := agentanycastd
 GOFLAGS := -trimpath
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: build test test-unit test-integration lint clean cross-compile
+.PHONY: build test test-unit test-integration bench lint clean cross-compile
 
 build:
 	CGO_ENABLED=0 go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/$(BINARY) ./cmd/agentanycastd
@@ -16,6 +16,9 @@ test-unit:
 
 test-integration:
 	go test -race -count=1 -run Integration ./...
+
+bench:
+	go test -bench=. -benchmem -count=3 ./...
 
 lint:
 	golangci-lint run ./...

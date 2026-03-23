@@ -116,3 +116,16 @@ func TestOnTaskUpdateCallback(t *testing.T) {
 		t.Fatal("onTaskUpdate callback was not called")
 	}
 }
+
+// BenchmarkTaskLifecycle measures the cost of creating a task and driving it
+// through the full submitted → working → completed lifecycle.
+func BenchmarkTaskLifecycle(b *testing.B) {
+	e := NewEngine(testLogger())
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		task := e.CreateTask("ctx-bench", "analyze_csv", "peer-bench")
+		_ = e.TransitionTask(context.Background(), task.ID, StatusWorking)
+		_ = e.TransitionTask(context.Background(), task.ID, StatusCompleted)
+	}
+}
