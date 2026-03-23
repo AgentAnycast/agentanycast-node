@@ -18,15 +18,16 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
-          repository: agentanycast/agentanycast-proto
-          path: agentanycast-proto
+          repository: agentanycast/agentanycast
+          path: agentanycast-main
+          sparse-checkout: proto
 
       - uses: bufbuild/buf-setup-action@v1
         with:
           github_token: ${{ github.token }}
 
       - name: Generate Go code from proto
-        working-directory: agentanycast-proto
+        working-directory: agentanycast-main/proto
         run: |
           printf 'version: v2\nplugins:\n  - remote: buf.build/protocolbuffers/go\n    out: gen/go\n    opt: paths=source_relative\n  - remote: buf.build/grpc/go\n    out: gen/go\n    opt: paths=source_relative\n' > buf.gen.go-only.yaml
           buf generate --template buf.gen.go-only.yaml
@@ -37,7 +38,7 @@ jobs:
           cache: true
 
       - name: Configure local replace directive
-        run: go mod edit -replace github.com/agentanycast/agentanycast-proto=./agentanycast-proto
+        run: go mod edit -replace github.com/agentanycast/agentanycast-proto=./agentanycast-main/proto
 
       - name: Download dependencies
         run: go mod download
@@ -53,15 +54,16 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
-          repository: agentanycast/agentanycast-proto
-          path: agentanycast-proto
+          repository: agentanycast/agentanycast
+          path: agentanycast-main
+          sparse-checkout: proto
 
       - uses: bufbuild/buf-setup-action@v1
         with:
           github_token: ${{ github.token }}
 
       - name: Generate Go code from proto
-        working-directory: agentanycast-proto
+        working-directory: agentanycast-main/proto
         run: |
           printf 'version: v2\nplugins:\n  - remote: buf.build/protocolbuffers/go\n    out: gen/go\n    opt: paths=source_relative\n  - remote: buf.build/grpc/go\n    out: gen/go\n    opt: paths=source_relative\n' > buf.gen.go-only.yaml
           buf generate --template buf.gen.go-only.yaml
@@ -72,7 +74,7 @@ jobs:
           cache: true
 
       - name: Configure local replace directive
-        run: go mod edit -replace github.com/agentanycast/agentanycast-proto=./agentanycast-proto
+        run: go mod edit -replace github.com/agentanycast/agentanycast-proto=./agentanycast-main/proto
 
       - name: Download dependencies
         run: go mod download
@@ -90,15 +92,16 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
-          repository: agentanycast/agentanycast-proto
-          path: agentanycast-proto
+          repository: agentanycast/agentanycast
+          path: agentanycast-main
+          sparse-checkout: proto
 
       - uses: bufbuild/buf-setup-action@v1
         with:
           github_token: ${{ github.token }}
 
       - name: Generate Go code from proto
-        working-directory: agentanycast-proto
+        working-directory: agentanycast-main/proto
         run: |
           printf 'version: v2\nplugins:\n  - remote: buf.build/protocolbuffers/go\n    out: gen/go\n    opt: paths=source_relative\n  - remote: buf.build/grpc/go\n    out: gen/go\n    opt: paths=source_relative\n' > buf.gen.go-only.yaml
           buf generate --template buf.gen.go-only.yaml
@@ -109,7 +112,7 @@ jobs:
           cache: true
 
       - name: Configure local replace directive
-        run: go mod edit -replace github.com/agentanycast/agentanycast-proto=./agentanycast-proto
+        run: go mod edit -replace github.com/agentanycast/agentanycast-proto=./agentanycast-main/proto
 
       - name: Download dependencies
         run: go mod download
@@ -130,15 +133,16 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
-          repository: agentanycast/agentanycast-proto
-          path: agentanycast-proto
+          repository: agentanycast/agentanycast
+          path: agentanycast-main
+          sparse-checkout: proto
 
       - uses: bufbuild/buf-setup-action@v1
         with:
           github_token: ${{ github.token }}
 
       - name: Generate Go code from proto
-        working-directory: agentanycast-proto
+        working-directory: agentanycast-main/proto
         run: |
           printf 'version: v2\nplugins:\n  - remote: buf.build/protocolbuffers/go\n    out: gen/go\n    opt: paths=source_relative\n  - remote: buf.build/grpc/go\n    out: gen/go\n    opt: paths=source_relative\n' > buf.gen.go-only.yaml
           buf generate --template buf.gen.go-only.yaml
@@ -149,7 +153,7 @@ jobs:
           cache: true
 
       - name: Configure local replace directive
-        run: go mod edit -replace github.com/agentanycast/agentanycast-proto=./agentanycast-proto
+        run: go mod edit -replace github.com/agentanycast/agentanycast-proto=./agentanycast-main/proto
 
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
@@ -165,15 +169,16 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
-          repository: agentanycast/agentanycast-proto
-          path: agentanycast-proto
+          repository: agentanycast/agentanycast
+          path: agentanycast-main
+          sparse-checkout: proto
 
       - uses: bufbuild/buf-setup-action@v1
         with:
           github_token: ${{ github.token }}
 
       - name: Generate Go code from proto
-        working-directory: agentanycast-proto
+        working-directory: agentanycast-main/proto
         run: |
           printf 'version: v2\nplugins:\n  - remote: buf.build/protocolbuffers/go\n    out: gen/go\n    opt: paths=source_relative\n  - remote: buf.build/grpc/go\n    out: gen/go\n    opt: paths=source_relative\n' > buf.gen.go-only.yaml
           buf generate --template buf.gen.go-only.yaml
@@ -184,7 +189,7 @@ jobs:
           cache: true
 
       - name: Configure local replace directive
-        run: go mod edit -replace github.com/agentanycast/agentanycast-proto=./agentanycast-proto
+        run: go mod edit -replace github.com/agentanycast/agentanycast-proto=./agentanycast-main/proto
 
       - name: Download dependencies
         run: go mod download

@@ -28,15 +28,16 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
-          repository: agentanycast/agentanycast-proto
-          path: agentanycast-proto
+          repository: agentanycast/agentanycast
+          path: agentanycast-main
+          sparse-checkout: proto
 
       - uses: bufbuild/buf-setup-action@v1
         with:
           github_token: ${{ github.token }}
 
       - name: Generate Go code from proto
-        working-directory: agentanycast-proto
+        working-directory: agentanycast-main/proto
         run: buf generate
 
       - uses: actions/setup-go@v5
@@ -45,7 +46,7 @@ jobs:
           cache: true
 
       - name: Configure local replace directive
-        run: go mod edit -replace github.com/agentanycast/agentanycast-proto=./agentanycast-proto
+        run: go mod edit -replace github.com/agentanycast/agentanycast-proto=./agentanycast-main/proto
 
       - name: Download dependencies
         run: go mod download
