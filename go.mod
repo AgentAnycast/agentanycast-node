@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	filippo.io/edwards25519 v1.2.0
+	github.com/AgentAnycast/agentanycast-identity v0.0.0-00010101000000-000000000000
 	github.com/BurntSushi/toml v1.6.0
 	github.com/agentanycast/agentanycast-proto v0.0.0-00010101000000-000000000000
 	github.com/google/uuid v1.6.0
@@ -153,3 +154,5 @@ require (
 )
 
 replace github.com/agentanycast/agentanycast-proto => ../agentanycast-proto
+
+replace github.com/AgentAnycast/agentanycast-identity => ../agentanycast-identity

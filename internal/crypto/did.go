@@ -1,25 +1,19 @@
 // Package crypto provides DID (Decentralized Identifier) utilities for
 // bidirectional conversion between libp2p PeerIDs and W3C did:key identifiers.
 //
-// The did:key method encodes a public key as:
-//
-//	did:key:z<multibase-base58btc(multicodec-prefix + raw-public-key)>
-//
-// For Ed25519 keys the multicodec prefix is 0xed01 (varint-encoded 0xed).
+// This is a thin wrapper around the agentanycast-identity package that adapts
+// between libp2p peer.ID types and standard library ed25519 types.
 package crypto
 
 import (
+	"crypto/ed25519"
 	"errors"
 	"fmt"
-	"strings"
 
+	"github.com/AgentAnycast/agentanycast-identity"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/mr-tron/base58"
 )
-
-// ed25519MulticodecPrefix is the varint-encoded multicodec for Ed25519 public keys (0xed).
-var ed25519MulticodecPrefix = []byte{0xed, 0x01}
 
 // ErrUnsupportedKeyType is returned when the PeerID does not use an Ed25519 key.
 var ErrUnsupportedKeyType = errors.New("only Ed25519 keys are supported for did:key conversion")
@@ -44,49 +38,22 @@ func PeerIDToDIDKey(pid peer.ID) (string, error) {
 		return "", fmt.Errorf("extract raw public key bytes: %w", err)
 	}
 
-	// Prepend the Ed25519 multicodec prefix.
-	mcBytes := make([]byte, 0, len(ed25519MulticodecPrefix)+len(raw))
-	mcBytes = append(mcBytes, ed25519MulticodecPrefix...)
-	mcBytes = append(mcBytes, raw...)
-
-	// Encode with multibase base58btc (prefix 'z').
-	encoded := "z" + base58.Encode(mcBytes)
-
-	return "did:key:" + encoded, nil
+	return identity.PubKeyToDIDKey(ed25519.PublicKey(raw))
 }
 
 // DIDKeyToPeerID converts a W3C did:key string (Ed25519) back to a libp2p PeerID.
 func DIDKeyToPeerID(didKey string) (peer.ID, error) {
-	if !strings.HasPrefix(didKey, "did:key:z") {
-		return "", ErrInvalidDIDKey
-	}
-
-	// Strip "did:key:z" prefix to get the base58btc-encoded payload.
-	encoded := didKey[len("did:key:z"):]
-
-	decoded, err := base58.Decode(encoded)
+	pub, err := identity.DIDKeyToPubKey(didKey)
 	if err != nil {
-		return "", fmt.Errorf("base58 decode did:key: %w", err)
+		return "", fmt.Errorf("%w: %w", ErrInvalidDIDKey, err)
 	}
 
-	// Verify and strip the Ed25519 multicodec prefix.
-	if len(decoded) < len(ed25519MulticodecPrefix)+32 {
-		return "", fmt.Errorf("%w: payload too short", ErrInvalidDIDKey)
-	}
-	for i, b := range ed25519MulticodecPrefix {
-		if decoded[i] != b {
-			return "", fmt.Errorf("%w: unexpected multicodec prefix (only Ed25519 supported)", ErrInvalidDIDKey)
-		}
-	}
-
-	rawPub := decoded[len(ed25519MulticodecPrefix):]
-
-	pub, err := crypto.UnmarshalEd25519PublicKey(rawPub)
+	libp2pPub, err := crypto.UnmarshalEd25519PublicKey(pub)
 	if err != nil {
 		return "", fmt.Errorf("unmarshal Ed25519 public key: %w", err)
 	}
 
-	pid, err := peer.IDFromPublicKey(pub)
+	pid, err := peer.IDFromPublicKey(libp2pPub)
 	if err != nil {
 		return "", fmt.Errorf("derive PeerID from public key: %w", err)
 	}

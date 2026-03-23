@@ -1,32 +1,23 @@
 // Package crypto provides did:dns DID method support.
 //
-// did:dns uses DNS TXT records to store DID information.
-//
-//	did:dns:example.com
-//
-// Resolution queries DNS TXT records at _did.<domain> and parses did:key URIs
-// from the record values. This provides a lightweight, DNS-based alternative to
-// did:web for associating domain names with agent identities.
-//
-// DNS record format (TXT at _did.example.com):
-//
-//	"did=did:key:z6Mkf5rGMoatrSj1f4CyvuHBeXJELe9RPdzo2PKGNCKVtZxP"
-//
-// Multiple records may exist to associate multiple agent identities with a domain.
+// This is a thin wrapper around the agentanycast-identity package, adapting
+// the identity package's DIDDNSEntry (which uses ed25519.PublicKey) to this
+// package's DIDDNSEntry (which uses a libp2p PeerID string).
 package crypto
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"strings"
+
+	"github.com/AgentAnycast/agentanycast-identity"
 )
 
-// Errors for did:dns operations.
+// Errors for did:dns operations. Re-exported from the identity package.
 var (
-	ErrInvalidDIDDNS = errors.New("invalid did:dns format")
-	ErrDIDDNSResolve = errors.New("did:dns resolution failed")
+	ErrInvalidDIDDNS = identity.ErrInvalidDIDDNS
+	ErrDIDDNSResolve = identity.ErrDIDDNSResolve
 )
 
 // DIDDNSEntry represents a single identity extracted from a did:dns record.
@@ -94,6 +85,7 @@ func resolveDIDDNSWithResolver(ctx context.Context, didDNS string, resolver dnsR
 }
 
 // parseDIDDNSDomain extracts the domain from a did:dns identifier.
+// Delegates validation logic to the identity package's rules.
 func parseDIDDNSDomain(didDNS string) (string, error) {
 	if !strings.HasPrefix(didDNS, "did:dns:") {
 		return "", fmt.Errorf("%w: missing did:dns: prefix", ErrInvalidDIDDNS)

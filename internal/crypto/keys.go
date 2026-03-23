@@ -1,65 +1,36 @@
 // Package crypto handles Ed25519 key generation, loading, and persistence.
+//
+// This package is a thin wrapper around the agentanycast-identity package,
+// adapting its standard library types to the libp2p crypto types used
+// throughout the node codebase.
 package crypto
 
 import (
-	"crypto/rand"
-	"errors"
+	"crypto/ed25519"
 	"fmt"
-	"os"
-	"path/filepath"
 
+	"github.com/AgentAnycast/agentanycast-identity"
 	"github.com/libp2p/go-libp2p/core/crypto"
 )
 
 // LoadOrGenerateKey loads an Ed25519 private key from path.
 // If the file does not exist, it generates a new key and saves it.
 func LoadOrGenerateKey(path string) (crypto.PrivKey, error) {
-	if path == "" {
-		return generateKey()
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return generateAndSaveKey(path)
-		}
-		return nil, fmt.Errorf("read key file: %w", err)
-	}
-
-	key, err := crypto.UnmarshalPrivateKey(data)
-	if err != nil {
-		return nil, fmt.Errorf("unmarshal private key: %w", err)
-	}
-	return key, nil
-}
-
-func generateKey() (crypto.PrivKey, error) {
-	priv, _, err := crypto.GenerateEd25519Key(rand.Reader)
-	if err != nil {
-		return nil, fmt.Errorf("generate ed25519 key: %w", err)
-	}
-	return priv, nil
-}
-
-func generateAndSaveKey(path string) (crypto.PrivKey, error) {
-	priv, err := generateKey()
+	stdKey, err := identity.LoadOrGenerateKey(path)
 	if err != nil {
 		return nil, err
 	}
 
-	data, err := crypto.MarshalPrivateKey(priv)
+	return stdKeyToLibp2p(stdKey)
+}
+
+// stdKeyToLibp2p converts a standard library ed25519.PrivateKey to a libp2p PrivKey.
+func stdKeyToLibp2p(stdKey ed25519.PrivateKey) (crypto.PrivKey, error) {
+	// libp2p's UnmarshalEd25519PrivateKey expects the 64-byte seed+pubkey format,
+	// which is exactly what ed25519.PrivateKey is.
+	priv, err := crypto.UnmarshalEd25519PrivateKey(stdKey)
 	if err != nil {
-		return nil, fmt.Errorf("marshal private key: %w", err)
+		return nil, fmt.Errorf("convert ed25519 key to libp2p: %w", err)
 	}
-
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return nil, fmt.Errorf("create key directory: %w", err)
-	}
-
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		return nil, fmt.Errorf("write key file: %w", err)
-	}
-
 	return priv, nil
 }
