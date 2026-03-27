@@ -24,15 +24,15 @@ jobs:
           - os: linux
             arch: arm64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           repository: agentanycast/agentanycast
           path: agentanycast-main
           sparse-checkout: proto
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           repository: AgentAnycast/agentanycast-identity
           path: agentanycast-identity
@@ -79,15 +79,15 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           repository: agentanycast/agentanycast
           path: agentanycast-main
           sparse-checkout: proto
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           repository: AgentAnycast/agentanycast-identity
           path: agentanycast-identity
