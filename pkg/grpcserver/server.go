@@ -521,8 +521,10 @@ func (s *Server) SendTask(ctx context.Context, req *pb.SendTaskRequest) (*pb.Sen
 func (s *Server) resolveConnectionCoreTarget(req *pb.SendTaskRequest) (string, bool) {
 	switch target := req.Target.(type) {
 	case *pb.SendTaskRequest_PeerId:
-		// PeerIDs are routed via Connection Core — it has a libp2p transport.
-		return target.PeerId, true
+		// PeerIDs are routed via the legacy Router path which constructs
+		// a proper A2AEnvelope. Connection Core's A2A adapter Emit does
+		// not reconstruct the full envelope, so skip it for libp2p peers.
+		return "", false
 	case *pb.SendTaskRequest_Url:
 		// HTTP/HTTPS URLs are handled by Connection Core's HTTP transport.
 		if strings.HasPrefix(target.Url, "http://") || strings.HasPrefix(target.Url, "https://") ||
