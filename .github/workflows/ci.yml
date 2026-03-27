@@ -22,6 +22,11 @@ jobs:
           path: agentanycast-main
           sparse-checkout: proto
 
+      - uses: actions/checkout@v4
+        with:
+          repository: AgentAnycast/agentanycast-identity
+          path: agentanycast-identity
+
       - uses: bufbuild/buf-setup-action@v1
         with:
           github_token: ${{ github.token }}
@@ -37,8 +42,10 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Configure local replace directive
-        run: go mod edit -replace github.com/agentanycast/agentanycast-proto=./agentanycast-main/proto
+      - name: Configure local replace directives
+        run: |
+          go mod edit -replace github.com/agentanycast/agentanycast-proto=./agentanycast-main/proto
+          go mod edit -replace github.com/AgentAnycast/agentanycast-identity=./agentanycast-identity
 
       - name: Download dependencies
         run: go mod download
@@ -58,6 +65,11 @@ jobs:
           path: agentanycast-main
           sparse-checkout: proto
 
+      - uses: actions/checkout@v4
+        with:
+          repository: AgentAnycast/agentanycast-identity
+          path: agentanycast-identity
+
       - uses: bufbuild/buf-setup-action@v1
         with:
           github_token: ${{ github.token }}
@@ -73,8 +85,10 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Configure local replace directive
-        run: go mod edit -replace github.com/agentanycast/agentanycast-proto=./agentanycast-main/proto
+      - name: Configure local replace directives
+        run: |
+          go mod edit -replace github.com/agentanycast/agentanycast-proto=./agentanycast-main/proto
+          go mod edit -replace github.com/AgentAnycast/agentanycast-identity=./agentanycast-identity
 
       - name: Download dependencies
         run: go mod download
@@ -96,6 +110,11 @@ jobs:
           path: agentanycast-main
           sparse-checkout: proto
 
+      - uses: actions/checkout@v4
+        with:
+          repository: AgentAnycast/agentanycast-identity
+          path: agentanycast-identity
+
       - uses: bufbuild/buf-setup-action@v1
         with:
           github_token: ${{ github.token }}
@@ -111,8 +130,10 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Configure local replace directive
-        run: go mod edit -replace github.com/agentanycast/agentanycast-proto=./agentanycast-main/proto
+      - name: Configure local replace directives
+        run: |
+          go mod edit -replace github.com/agentanycast/agentanycast-proto=./agentanycast-main/proto
+          go mod edit -replace github.com/AgentAnycast/agentanycast-identity=./agentanycast-identity
 
       - name: Download dependencies
         run: go mod download
@@ -137,6 +158,11 @@ jobs:
           path: agentanycast-main
           sparse-checkout: proto
 
+      - uses: actions/checkout@v4
+        with:
+          repository: AgentAnycast/agentanycast-identity
+          path: agentanycast-identity
+
       - uses: bufbuild/buf-setup-action@v1
         with:
           github_token: ${{ github.token }}
@@ -152,8 +178,10 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Configure local replace directive
-        run: go mod edit -replace github.com/agentanycast/agentanycast-proto=./agentanycast-main/proto
+      - name: Configure local replace directives
+        run: |
+          go mod edit -replace github.com/agentanycast/agentanycast-proto=./agentanycast-main/proto
+          go mod edit -replace github.com/AgentAnycast/agentanycast-identity=./agentanycast-identity
 
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
@@ -173,6 +201,11 @@ jobs:
           path: agentanycast-main
           sparse-checkout: proto
 
+      - uses: actions/checkout@v4
+        with:
+          repository: AgentAnycast/agentanycast-identity
+          path: agentanycast-identity
+
       - uses: bufbuild/buf-setup-action@v1
         with:
           github_token: ${{ github.token }}
@@ -188,8 +221,10 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Configure local replace directive
-        run: go mod edit -replace github.com/agentanycast/agentanycast-proto=./agentanycast-main/proto
+      - name: Configure local replace directives
+        run: |
+          go mod edit -replace github.com/agentanycast/agentanycast-proto=./agentanycast-main/proto
+          go mod edit -replace github.com/AgentAnycast/agentanycast-identity=./agentanycast-identity
 
       - name: Download dependencies
         run: go mod download

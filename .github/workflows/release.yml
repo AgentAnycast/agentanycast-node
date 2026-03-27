@@ -32,6 +32,11 @@ jobs:
           path: agentanycast-main
           sparse-checkout: proto
 
+      - uses: actions/checkout@v4
+        with:
+          repository: AgentAnycast/agentanycast-identity
+          path: agentanycast-identity
+
       - uses: bufbuild/buf-setup-action@v1
         with:
           github_token: ${{ github.token }}
@@ -45,8 +50,10 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Configure local replace directive
-        run: go mod edit -replace github.com/agentanycast/agentanycast-proto=./agentanycast-main/proto
+      - name: Configure local replace directives
+        run: |
+          go mod edit -replace github.com/agentanycast/agentanycast-proto=./agentanycast-main/proto
+          go mod edit -replace github.com/AgentAnycast/agentanycast-identity=./agentanycast-identity
 
       - name: Download dependencies
         run: go mod download
@@ -56,7 +63,7 @@ jobs:
           CGO_ENABLED: "0"
           GOOS: ${{ matrix.os }}
           GOARCH: ${{ matrix.arch }}
-        run: go build -trimpath -ldflags="-s -w" -o agentanycastd-${{ matrix.os }}-${{ matrix.arch }} ./cmd/agentanycastd
+        run: go build -trimpath -ldflags="-s -w -X main.version=${{ github.ref_name }}" -o agentanycastd-${{ matrix.os }}-${{ matrix.arch }} ./cmd/agentanycastd
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -71,6 +78,32 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: agentanycast/agentanycast
+          path: agentanycast-main
+          sparse-checkout: proto
+
+      - uses: actions/checkout@v4
+        with:
+          repository: AgentAnycast/agentanycast-identity
+          path: agentanycast-identity
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Configure local replace directives
+        run: |
+          go mod edit -replace github.com/agentanycast/agentanycast-proto=./agentanycast-main/proto
+          go mod edit -replace github.com/AgentAnycast/agentanycast-identity=./agentanycast-identity
+
+      - name: Generate SBOM
+        run: |
+          go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@latest
+          cyclonedx-gomod mod -json -output sbom.cdx.json
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -89,3 +122,4 @@ jobs:
           files: |
             artifacts/agentanycastd-*
             artifacts/checksums.txt
+            sbom.cdx.json
