@@ -37,7 +37,7 @@ jobs:
           printf 'version: v2\nplugins:\n  - remote: buf.build/protocolbuffers/go\n    out: gen/go\n    opt: paths=source_relative\n  - remote: buf.build/grpc/go\n    out: gen/go\n    opt: paths=source_relative\n' > buf.gen.go-only.yaml
           buf generate --template buf.gen.go-only.yaml
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
@@ -80,7 +80,7 @@ jobs:
           printf 'version: v2\nplugins:\n  - remote: buf.build/protocolbuffers/go\n    out: gen/go\n    opt: paths=source_relative\n  - remote: buf.build/grpc/go\n    out: gen/go\n    opt: paths=source_relative\n' > buf.gen.go-only.yaml
           buf generate --template buf.gen.go-only.yaml
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
@@ -125,7 +125,7 @@ jobs:
           printf 'version: v2\nplugins:\n  - remote: buf.build/protocolbuffers/go\n    out: gen/go\n    opt: paths=source_relative\n  - remote: buf.build/grpc/go\n    out: gen/go\n    opt: paths=source_relative\n' > buf.gen.go-only.yaml
           buf generate --template buf.gen.go-only.yaml
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
@@ -173,7 +173,7 @@ jobs:
           printf 'version: v2\nplugins:\n  - remote: buf.build/protocolbuffers/go\n    out: gen/go\n    opt: paths=source_relative\n  - remote: buf.build/grpc/go\n    out: gen/go\n    opt: paths=source_relative\n' > buf.gen.go-only.yaml
           buf generate --template buf.gen.go-only.yaml
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
@@ -217,7 +217,7 @@ jobs:
           printf 'version: v2\nplugins:\n  - remote: buf.build/protocolbuffers/go\n    out: gen/go\n    opt: paths=source_relative\n  - remote: buf.build/grpc/go\n    out: gen/go\n    opt: paths=source_relative\n' > buf.gen.go-only.yaml
           buf generate --template buf.gen.go-only.yaml
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
