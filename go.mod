@@ -11,7 +11,7 @@ require (
 	github.com/ipfs/go-cid v0.6.0
 	github.com/libp2p/go-libp2p v0.47.0
 	github.com/libp2p/go-libp2p-kad-dht v0.38.0
-	github.com/mark3labs/mcp-go v0.45.0
+	github.com/mark3labs/mcp-go v0.46.0
 	github.com/mr-tron/base58 v1.2.0
 	github.com/multiformats/go-multiaddr v0.16.1
 	github.com/multiformats/go-multihash v0.2.3
