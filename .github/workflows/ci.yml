@@ -14,15 +14,15 @@ jobs:
     name: Go Vet
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           repository: agentanycast/agentanycast
           path: agentanycast-main
           sparse-checkout: proto
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           repository: AgentAnycast/agentanycast-identity
           path: agentanycast-identity
@@ -57,15 +57,15 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           repository: agentanycast/agentanycast
           path: agentanycast-main
           sparse-checkout: proto
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           repository: AgentAnycast/agentanycast-identity
           path: agentanycast-identity
@@ -102,15 +102,15 @@ jobs:
     name: Go Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           repository: agentanycast/agentanycast
           path: agentanycast-main
           sparse-checkout: proto
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           repository: AgentAnycast/agentanycast-identity
           path: agentanycast-identity
@@ -150,15 +150,15 @@ jobs:
     name: Security Audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           repository: agentanycast/agentanycast
           path: agentanycast-main
           sparse-checkout: proto
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           repository: AgentAnycast/agentanycast-identity
           path: agentanycast-identity
@@ -194,15 +194,15 @@ jobs:
     name: Build Binary (linux-amd64)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           repository: agentanycast/agentanycast
           path: agentanycast-main
           sparse-checkout: proto
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           repository: AgentAnycast/agentanycast-identity
           path: agentanycast-identity
